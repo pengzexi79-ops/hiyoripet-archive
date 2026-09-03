@@ -7,6 +7,7 @@
   - **M0**（骨架：Tauri 2 透明窗口 + 点击穿透 + 托盘退出）**编译验证通过** ✅（`cargo build --target x86_64-pc-windows-gnu` 成功，`pet.exe` 219MB debug + `pet_lib.dll` 产出）。
   - **M1**（Live2D Hiyori 渲染接入 + 资产 vendoring）**构建验证通过** ✅（`tsc --strict` 零报错；`pnpm build` 产出含 cubism-core + Hiyori 的 `dist`；`cargo build` 嵌入真实 `dist` 通过）。
   - **M2**（交互：点击命中触发动作/表情 + 拖拽 + 空闲自播）**代码 + 构建验证通过** ✅（`tsc`/`vite build`/`cargo build` 全绿；Hiyori 自带 `HitArea:Body` + `TapBody` 动作组，已直接对接）。
+  - **M3-Part1**（语音对话：文本通道 + foxtoken LLM 流式）**前后端代码完成 + 后端冒烟通过** ✅（前端 `tsc`/`vite build` 绿；后端 FastAPI/WS/LLM/TTS/ASR 模块按 C2/C3 落地；WS 冒烟 `ping→pong`、`text-input` 无 key→`error` 通过；真实 LLM 流式回复待用户本机设 `FOXTOKEN_KEY` 验证）。
 - **环境**：
   - ✅ Rust 1.98.0 stable，已 `rustup default stable-x86_64-pc-windows-gnu`（默认工具链此前未设，是首个编译报错根因）。
   - ✅ `x86_64-pc-windows-gnu` target 已装；`.cargo/config.toml` 默认 target=gnu。
@@ -82,4 +83,32 @@
 2. 通过后提交 `M2 verified: 交互（点击命中触发动作/表情 + 拖拽 + 空闲自播）`。
 3. 进 M3（语音）：foxtoken LLM + 本地 ASR/TTS（D4/D5），前端先定义 WS `text-input` 通道（C2 已留桩）。
 4. 后续 M4 人格 / M5 打磨。
+
+## M3 进度（语音对话：后端 FastAPI + WS + foxtoken LLM）— 截至 2026-09-03
+- **目标**：让桌宠能「对话」。M3-Part1 先打通**文本对话通道**（text-input → foxtoken LLM 流式 → ai-response），语音（ASR/TTS）留桩，后续接。
+- **前端 ✅**（tsc + vite build 绿）：
+  - `src/core/protocol.ts`：C2 消息类型（补 `ping`/`pong`）。
+  - `src/core/ws.ts`：`PetSocket`（连接/自动重连/15s 心跳/收发）。
+  - `src/core/chat.ts`：把 `ai-response` delta 累加为字幕 + 占位口型（`setParameterValue('ParamMouthOpenY', 正弦)`；真实口型待 TTS volumes 驱动）。
+  - `src/App.vue`：HUD 加文本输入框 + 字幕气泡 + WS 状态点（绿=已连后端）；`onMounted` 建连 `ws://localhost:8000/ws`（可用 `VITE_WS_URL` 覆盖）。
+- **后端 ✅**（FastAPI，按 ARCHITECTURE L1/L2 + C3 接口+工厂模式）：
+  - `backend/conf.yaml`：foxtoken LLM（base_url=https://foxtoken.top/v1，model=gpt-5.5，key=`${FOXTOKEN_KEY}`）、Edge TTS、ASR stub；`agent.system_prompt` + `tts:false`。
+  - `backend/config_manager/`：Pydantic 校验 + `${ENV_VAR}` 解析（密钥不入库）。
+  - `backend/llm/`：`LLMInterface`(Protocol) + `FoxtokenLLM`(OpenAI 兼容流式) + `llm_factory`。
+  - `backend/tts/`：`TTSInterface` + `EdgeTTSTTS`(edge-tts) + `tts_factory`。
+  - `backend/asr/`：`ASRInterface` + `StubASR`(M3 后续 sherpa-onnx) + `asr_factory`。
+  - `backend/service_context.py`：服务定位器（配置→单例）。
+  - `backend/server.py`：`/ws` WebSocket；`text-input`→流式 `ai-response`（历史 20 轮）；`audio-end`→ASR 桩报错；`/health` 健康检查。
+  - `backend/requirements.txt` + `test_ws_smoke.py`（连 WS、ping、text-input 冒烟）。
+- **验证**：
+  - 前端：`tsc --strict` 零报错 → `pnpm build` 绿。
+  - 后端：**冒烟测试通过** ✅（`uvicorn server:app` 起服务 + `test_ws_smoke.py`）：`/health`→`ok`；`ping`→`pong`；`text-input` 无 `FOXTOKEN_KEY` 时返回 `error: FOXTOKEN_KEY 未设置`（证明 WS 接线、协议解析、三工厂构建、错误处理全通）。**真实 LLM 流式回复（`ai-response` delta）需用户本机设 `FOXTOKEN_KEY` 后验证**。
+  - **冒烟期间修复的 bug**：`build_tts/build_llm/build_asr` 原用 `default_*` 配置**键**（`foxtoken`/`edge`/`stub`）做 provider 分发，但 TTS 配置键 `edge` ≠ provider 字段 `edge-tts`，导致 `ValueError: 未知 TTS provider: edge`、首条 WS 消息即崩。已改为按 `cfg.provider`（配置内 provider 字段）分发，配置键与 provider 类型解耦（见 DECISIONS D4）。
+- **待办**：本机 `cd backend && pip install -r requirements.txt && uvicorn server:app`；桌面 `pnpm tauri dev`；前端输入框说话，宠物回字幕 + 口型。
+
+## 下一步（M3 收尾 → M4）
+1. 本机验证后端启动 + WS 文本对话（设 `FOXTOKEN_KEY`）。
+2. 接真实 TTS（Edge TTS → 前端播放 `audio` + volumes 驱动口型）；接本地 ASR（sherpa-onnx）→ `audio-chunk` 通道。
+3. 数据流 B 全链路（麦克风→ASR→Agent→LLM→TTS→口型/表情）跑通。
+4. 进 M4 人格 / M5 打磨。
 

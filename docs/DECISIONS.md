@@ -21,6 +21,7 @@
 - 配置：`backend/conf.yaml` 的 `llm_configs` 里放 `foxtoken` 项，`base_url=https://foxtoken.top/v1`，模型 `gpt-5.5`。
 - 影响：ASR/TTS 仍走本地（sherpa-onnx / Edge TTS），降低延迟与成本；LLM 走云端。
 - 密钥：放环境变量 `${FOXTOKEN_KEY}`，**不写进仓库**。
+- **配置约定（2026-08-31 修正）**：`backend/conf.yaml` 里 `llm_configs`/`tts_configs`/`asr_configs` 的**顶层键**（如 `foxtoken`/`edge`/`stub`）只是「配置标签」，**不是** provider 类型；真实实现由该配置项内部的 `provider` 字段（如 `openai-compatible`/`edge-tts`/`stub`）决定。`build_llm/build_tts/build_asr` 一律按 `cfg.provider` 分发，配置键可自由命名（避免 `edge` ≠ `edge-tts` 这类 `ValueError`）。
 
 ## D5 语音链路：M3 再做
 - 理由：ASR/TTS/VAD 约占 40% 工作量，且依赖音频设备调试。

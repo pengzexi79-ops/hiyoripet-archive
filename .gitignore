@@ -10,3 +10,7 @@ public/cubism-core/
 *.log
 .DS_Store
 .env
+.venv
+backend/.venv
+__pycache__/
+*.pyc

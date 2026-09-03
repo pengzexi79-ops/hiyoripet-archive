@@ -3,10 +3,13 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Live2d, type ModelMeta } from './core/live2d'
+import { PetSocket, type WsStatus } from './core/ws'
+import { Chat } from './core/chat'
 
 // 模型放置于 public/models/Hiyori/（Vite 构建时拷进 dist/models/，由 Tauri 资源一并打包）。
-// 资产获取见 docs/DECISIONS.md D7（从 Live2D 官方 SDK 解出的 Cubism 4 样例 Hiyori）。
 const MODEL_URL = '/models/Hiyori/Hiyori.model3.json'
+// 后端 WS 地址：默认本机 8000；可用 VITE_WS_URL 覆盖（如打包后改为实际地址）。
+const WS_URL = (import.meta as unknown as { env?: { VITE_WS_URL?: string } }).env?.VITE_WS_URL || 'ws://localhost:8000/ws'
 
 const canvas = ref<HTMLCanvasElement | null>(null)
 const status = ref('初始化中…')
@@ -15,7 +18,16 @@ const hasCore = ref(true)
 const meta = ref<ModelMeta | null>(null)
 const lastInteraction = ref(0)
 
+// M3 对话状态
+const wsStatus = ref<WsStatus>('closed')
+const subtitle = ref('')
+const typing = ref(false)
+const inputText = ref('')
+const wsError = ref('')
+
 let pet: Live2d | null = null
+let socket: PetSocket | null = null
+let chat: Chat | null = null
 let idleTimer: number | undefined
 
 async function loadModel() {
@@ -43,20 +55,54 @@ onMounted(async () => {
   pet.initApp(canvas.value)
   await loadModel()
   startIdle()
+  // M3：建立后端对话通道
+  connectChat()
 })
 
 onBeforeUnmount(() => {
   stopIdle()
+  chat?.destroy()
+  socket?.close()
   pet?.destroy()
   pet = null
+  socket = null
+  chat = null
 })
+
+function connectChat() {
+  if (!pet) return
+  socket = new PetSocket(WS_URL)
+  socket.onStatus((s) => {
+    wsStatus.value = s
+    if (s === 'open') wsError.value = ''
+  })
+  chat = new Chat(socket, pet, {
+    onSubtitle: (t) => (subtitle.value = t),
+    onTyping: (b) => (typing.value = b),
+    onError: (m) => {
+      wsError.value = m
+      subtitle.value = ''
+    },
+  })
+  socket.connect()
+}
+
+function sendText() {
+  const text = inputText.value.trim()
+  if (!text || !chat) return
+  subtitle.value = ''
+  wsError.value = ''
+  chat.sendText(text)
+  inputText.value = ''
+  lastInteraction.value = Date.now()
+}
 
 // ── M2：空闲自播待机动作（数据流 C）──
 function startIdle() {
   stopIdle()
   idleTimer = window.setInterval(() => {
     if (clickthrough.value || !pet) return
-    const idle = (Date.now() - lastInteraction.value) > 8000
+    const idle = Date.now() - lastInteraction.value > 8000
     if (idle) {
       pet.playMotionRandom('Idle').catch(() => {})
       lastInteraction.value = Date.now()
@@ -77,13 +123,11 @@ async function onPointerDown(e: PointerEvent) {
   const y = e.offsetY
   const hits = pet.hitTest(x, y)
   if (hits.includes('Body')) {
-    // 戳到身体 → 播放 TapBody 互动动作，偶尔加个表情
     lastInteraction.value = Date.now()
     status.value = '被摸到了～'
     pet.playMotionRandom('TapBody').catch(() => {})
     if (Math.random() < 0.4) pet.playExpressionRandom().catch(() => {})
   } else {
-    // 点空白处 → 拖动窗口
     await getCurrentWindow().startDragging()
   }
 }
@@ -100,7 +144,6 @@ async function startDrag() {
   await getCurrentWindow().startDragging()
 }
 
-// 手动测试按钮（同时是桌面验收工具）
 function testMotion(group: string) {
   lastInteraction.value = Date.now()
   pet?.playMotionRandom(group)
@@ -109,24 +152,50 @@ function testExpression() {
   lastInteraction.value = Date.now()
   pet?.playExpressionRandom()
 }
+
+const wsDot: Record<WsStatus, string> = {
+  connecting: '#f0a020',
+  open: '#2ecc71',
+  closed: '#999',
+  error: '#e74c3c',
+}
 </script>
 
 <template>
   <div class="wrapper">
     <canvas ref="canvas" class="stage" @pointerdown="onPointerDown"></canvas>
+
+    <div v-if="subtitle" class="subtitle">{{ subtitle }}<span v-if="typing" class="caret">▌</span></div>
+
     <div class="hud" :class="{ disabled: !hasCore }">
-      <div class="status">{{ status }}</div>
+      <div class="status">
+        {{ status }}
+        <span class="ws" :style="{ background: wsDot[wsStatus] }" :title="`后端：${wsStatus}`"></span>
+      </div>
       <button v-if="hasCore" @mousedown.stop @click="toggle">切换穿透</button>
+
       <div v-if="meta" class="row">
         <span class="lbl">动作</span>
-        <button v-for="g in Object.keys(meta.motions)" :key="g" @mousedown.stop @click="testMotion(g)">
-          {{ g }}
-        </button>
+        <button v-for="g in Object.keys(meta.motions)" :key="g" @mousedown.stop @click="testMotion(g)">{{ g }}</button>
       </div>
       <div v-if="meta && meta.expressions.length" class="row">
         <span class="lbl">表情</span>
         <button @mousedown.stop @click="testExpression">随机</button>
       </div>
+
+      <div class="row chat">
+        <input
+          v-model="inputText"
+          class="chat-input"
+          type="text"
+          placeholder="和桌宠说点什么…"
+          @mousedown.stop
+          @keydown.enter="sendText"
+        />
+        <button @mousedown.stop @click="sendText">发送</button>
+      </div>
+      <div v-if="wsError" class="err">⚠ {{ wsError }}</div>
+
       <div class="tip">点模型身体→互动 · 点空白→拖窗口 · 右键托盘退出</div>
     </div>
   </div>
@@ -154,6 +223,23 @@ body {
   height: 100%;
   display: block;
 }
+.subtitle {
+  position: absolute;
+  left: 50%;
+  top: 12%;
+  transform: translateX(-50%);
+  max-width: 80%;
+  background: rgba(255, 255, 255, 0.85);
+  color: #234;
+  padding: 6px 12px;
+  border-radius: 12px;
+  font-size: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+.caret {
+  opacity: 0.5;
+}
 .hud {
   position: absolute;
   left: 50%;
@@ -165,7 +251,7 @@ body {
   padding: 6px 10px;
   border-radius: 8px;
   text-align: center;
-  max-width: 280px;
+  max-width: 300px;
   pointer-events: auto;
 }
 .hud.disabled {
@@ -175,6 +261,14 @@ body {
   margin: 3px 2px 0;
   cursor: pointer;
 }
+.hud .ws {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-left: 6px;
+  vertical-align: middle;
+}
 .row {
   margin-top: 4px;
   display: flex;
@@ -183,6 +277,17 @@ body {
   justify-content: center;
   align-items: center;
 }
+.row.chat {
+  margin-top: 6px;
+}
+.chat-input {
+  flex: 1;
+  min-width: 120px;
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid #cdd;
+  border-radius: 6px;
+}
 .lbl {
   opacity: 0.6;
   margin-right: 2px;
@@ -190,5 +295,9 @@ body {
 .tip {
   margin-top: 4px;
   opacity: 0.6;
+}
+.err {
+  margin-top: 4px;
+  color: #e74c3c;
 }
 </style>

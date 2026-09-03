@@ -47,7 +47,8 @@ export class Live2d {
 ```ts
 // 前端 → 后端
 type ClientMsg =
-  | { type: 'audio-chunk';   data: Float32Array }   // 采样率固定 16000
+  | { type: 'ping' }
+  | { type: 'audio-chunk';   data: number[] }       // 采样率固定 16000，M3 后续（JSON 传输，二进制帧待优化）
   | { type: 'audio-end' }
   | { type: 'text-input';    text: string; image?: string }
   | { type: 'interrupt' }
@@ -55,13 +56,17 @@ type ClientMsg =
 
 // 后端 → 前端
 type ServerMsg =
+  | { type: 'pong' }
   | { type: 'ai-response';   text: string; audio?: string; volumes?: number[]; emotion: string }
   | { type: 'transcription'; text: string }
   | { type: 'tool-status';   tool: string; status: string }
   | { type: 'error';         message: string };
 ```
 
-约束：音频采样率全局固定 **16000 Hz**（见 AGENTS.md 规则 10）。
+约束：
+- 音频采样率全局固定 **16000 Hz**（见 AGENTS.md 规则 10）。
+- `ai-response.text` 为**流式增量（delta）**，前端按会话累加为完整字幕。
+- `ping`/`pong` 用于心跳保活，前端每 15s 发一次 `ping`。
 
 ## C3 后端能力接口（`backend/*/`）—— 工厂 + Protocol 模式
 

@@ -2,8 +2,11 @@
 
 > AI 每次会话开始先读这个文件，用 ≤5 行复述进度后再动手。
 
-## 当前状态（2026-09-03 20:2x）
-- **里程碑**：M0（骨架：Tauri 2 透明窗口 + 点击穿透 + 托盘退出）**编译验证通过** ✅（2026-09-03，`cargo build --target x86_64-pc-windows-gnu` 成功，`pet.exe` 219MB debug + `pet_lib.dll` 产出）。
+## 当前状态（2026-09-03 21:1x）
+- **里程碑**：
+  - **M0**（骨架：Tauri 2 透明窗口 + 点击穿透 + 托盘退出）**编译验证通过** ✅（`cargo build --target x86_64-pc-windows-gnu` 成功，`pet.exe` 219MB debug + `pet_lib.dll` 产出）。
+  - **M1**（Live2D Hiyori 渲染接入 + 资产 vendoring）**构建验证通过** ✅（`tsc --strict` 零报错；`pnpm build` 产出含 cubism-core + Hiyori 的 `dist`；`cargo build` 嵌入真实 `dist` 通过）。
+  - **M2**（交互：点击命中触发动作/表情 + 拖拽 + 空闲自播）**代码 + 构建验证通过** ✅（`tsc`/`vite build`/`cargo build` 全绿；Hiyori 自带 `HitArea:Body` + `TapBody` 动作组，已直接对接）。
 - **环境**：
   - ✅ Rust 1.98.0 stable，已 `rustup default stable-x86_64-pc-windows-gnu`（默认工具链此前未设，是首个编译报错根因）。
   - ✅ `x86_64-pc-windows-gnu` target 已装；`.cargo/config.toml` 默认 target=gnu。
@@ -63,9 +66,20 @@
   - → `public/cubism-core/live2dcubismcore.min.js`（gitignored，运行时 vendoring）
   - → `public/models/Hiyori/`（gitignored，`models/` 已在 .gitignore）
 
-## 下一步（M1 收尾）
-1. SDK 包解压 → 取 `CubismWebFramework/Core/live2dcubismcore.min.js` 到 `public/cubism-core/`，取 `Hiyori` 模型目录到 `public/models/Hiyori/`。
-2. `pnpm build` 复验（dist 含 cubism-core 预加载 + 模型可加载）。
-3. 完整验收需用户桌面 `pnpm tauri dev`：透明窗内渲染 Hiyori、点穿透/托盘退出、模型动作/表情可触发。
-4. 通过后提交 `M1 verified: Live2D (PIXI v6 + pixi-live2d-display) 渲染接入 + 资产 vendoring`。
+## M2 进度（交互：点击命中 / 拖拽 / 空闲自播）— 截至 2026-09-03
+- **API 核实 ✅**：先查 `node_modules/pixi-live2d-display/types/index.d.ts` 坐实 `hitTest(x,y): string[]`（返回命中 hit area **名称数组**，非布尔）、`motion(group,index?)`、`expression(id?)`、`motions`/`expressions`/`width`/`height` 均为真实属性 → 据此把 `live2d.ts` 的 `model` 从 `any` 改为精确类型 `Live2DModel`，消除「待核实」项。
+- **live2d.ts 重写 ✅**：修正过时注释（原误写 "PIXI v7"，实际 v6）；新增 M2 互动方法 `hitTest` / `getMotionGroups` / `playMotionRandom` / `playExpressionRandom`；`ModelMeta.motions` 收紧为 `Record<string, unknown[]>`。
+- **App.vue 交互 ✅**：
+  - 画布 `@pointerdown`：`hitTest` 命中 `Body` → 播 `TapBody` 互动动作（40% 概率附带随机表情）；点空白 → `getCurrentWindow().startDragging()` 拖动窗口。
+  - 空闲自播：无交互超 8s 自动随机播 `Idle` 待机动作（数据流 C）。
+  - HUD 新增「动作组 / 表情」手动按钮，兼作**桌面验收工具**（沙箱无 GUI，用户可逐项点测）。
+  - 保留穿透切换、加载状态、Cubism Core 缺失提示。
+- **契约同步 ✅**：`docs/CONTRACTS.md` C1 增补 M2 方法并修正 `motions` 类型（单一事实源防漂移）。
+- **三层门禁 ✅**：`tsc --strict` 零报错 → `pnpm build`（727KB dist）→ `cargo build --target x86_64-pc-windows-gnu` 成功嵌入新 `dist`（仅良性 `.rsrc merge` 告警 + 一次增量缓存 `拒绝访问` 瞬警，均非致命）。
+
+## 下一步（M2 收尾 → M3）
+1. **运行时验收待用户桌面 `pnpm tauri dev`**（沙箱无 GUI/WebView2，仅做到编译+构建+资产级验证）：透明窗内渲染 Hiyori、点身体有互动反馈、点空白可拖窗、空闲自播、右键托盘退出。
+2. 通过后提交 `M2 verified: 交互（点击命中触发动作/表情 + 拖拽 + 空闲自播）`。
+3. 进 M3（语音）：foxtoken LLM + 本地 ASR/TTS（D4/D5），前端先定义 WS `text-input` 通道（C2 已留桩）。
+4. 后续 M4 人格 / M5 打磨。
 

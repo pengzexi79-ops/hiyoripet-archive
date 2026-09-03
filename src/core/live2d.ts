@@ -1,6 +1,6 @@
 // src/core/live2d.ts
-// Live2d 单例：PIXI Application + Live2DModel（pixi-live2d-display@0.4.0, PIXI v7）
-// 契约见 docs/CONTRACTS.md C1。API 细节以 pixi-live2d-display@0.4.0 实际类型为准（下方「待核实」项须在装好依赖后 tsc 核实）。
+// Live2d 单例：PIXI Application + Live2DModel（pixi-live2d-display@0.4.0, PIXI v6）
+// 契约见 docs/CONTRACTS.md C1。API 以 pixi-live2d-display@0.4.0 实际类型为准（tsc --strict 已验证）。
 import * as PIXI from 'pixi.js'
 // Hiyori 等官方样例是 Cubism 4，走 /cubism4 入口。
 // ⚠️ 运行时必须已存在全局 window.Live2DCubismCore（由 index.html 预加载 public/cubism-core/live2dcubismcore.min.js 提供）。
@@ -9,20 +9,26 @@ import { Live2DModel } from 'pixi-live2d-display/cubism4'
 // pixi-live2d-display 通过 window.PIXI.Ticker 自动驱动模型更新，必须暴露。
 ;(window as unknown as { PIXI: typeof PIXI }).PIXI = PIXI
 
+export interface ModelExpression {
+  name: string
+  file: string
+}
+
 export interface ModelMeta {
   width: number
   height: number
-  motions: Record<string, unknown> // 动作组，如 tap_body / idle
-  expressions: Array<{ name: string; file: string }>
+  // 动作组：键为组名（如 Idle / TapBody），值为该组动作定义数组。
+  motions: Record<string, unknown[]>
+  expressions: ModelExpression[]
 }
 
 export class Live2d {
   private app: PIXI.Application | null = null
-  // 待核实：精确类型为 Live2DModel；装好依赖后替换为 import 类型，去掉 any。
-  private model: any = null
+  // 精确类型（pixi-live2d-display@0.4.0 已导出 Live2DModel）。
+  private model: Live2DModel | null = null
 
   initApp(canvas: HTMLCanvasElement): void {
-    // PIXI v7 用构造器（v8 才改 await app.init()）。backgroundAlpha:0 保证透明。
+    // PIXI v6/v7 通用构造器写法（v8 才改 await app.init()）。backgroundAlpha:0 保证透明。
     this.app = new PIXI.Application({
       view: canvas,
       backgroundAlpha: 0,
@@ -47,13 +53,15 @@ export class Live2d {
 
   private scanMeta(): ModelMeta {
     const m = this.model
-    const motions: Record<string, unknown> = {}
-    if (m?.motions) for (const k of Object.keys(m.motions)) motions[k] = m.motions[k]
-    const expressions: Array<{ name: string; file: string }> = []
-    if (Array.isArray(m?.expressions)) {
-      for (const e of m.expressions) {
-        expressions.push({ name: e?.name ?? '', file: e?.file ?? '' })
-      }
+    const motions: Record<string, unknown[]> = {}
+    const rawMotions = (m as unknown as { motions?: Record<string, unknown[]> })?.motions
+    if (rawMotions && typeof rawMotions === 'object') {
+      for (const k of Object.keys(rawMotions)) motions[k] = rawMotions[k]
+    }
+    const expressions: ModelExpression[] = []
+    const rawExpr = (m as unknown as { expressions?: ModelExpression[] })?.expressions
+    if (Array.isArray(rawExpr)) {
+      for (const e of rawExpr) expressions.push({ name: e?.name ?? '', file: e?.file ?? '' })
     }
     return {
       width: m?.width ?? 0,
@@ -74,26 +82,54 @@ export class Live2d {
     this.model.y = sh / 2
   }
 
+  // ── M2 互动 ───────────────────────────────────────────────
+  /** 命中检测：返回点 (x,y) 命中的 hit area 名称数组（model3.json 的 HitAreas.Name）。空数组=未命中。 */
+  hitTest(x: number, y: number): string[] {
+    return this.model?.hitTest(x, y) ?? []
+  }
+
+  /** 列出所有动作组名（如 ['Idle','TapBody']）。 */
+  getMotionGroups(): string[] {
+    const raw = (this.model as unknown as { motions?: Record<string, unknown[]> })?.motions
+    return raw ? Object.keys(raw) : []
+  }
+
+  /** 随机播一个动作组里的某个动作；组不存在则静默。 */
+  async playMotionRandom(group: string): Promise<void> {
+    const raw = (this.model as unknown as { motions?: Record<string, unknown[]> })?.motions
+    const arr = raw?.[group]
+    if (Array.isArray(arr) && arr.length) {
+      const i = Math.floor(Math.random() * arr.length)
+      await this.playMotion(group, i)
+    }
+  }
+
+  /** 随机播一个表情；无表情则静默。 */
+  async playExpressionRandom(): Promise<void> {
+    const exprs = (this.model as unknown as { expressions?: ModelExpression[] })?.expressions
+    if (Array.isArray(exprs) && exprs.length) {
+      const i = Math.floor(Math.random() * exprs.length)
+      await this.playExpressions(i)
+    }
+  }
+
   async playMotion(group: string, index: number): Promise<void> {
-    // 待核实：返回 Promise<boolean>；模型无该动作组时静默失败，调用方不依赖返回值。
     if (this.model) await this.model.motion(group, index)
   }
 
   async playExpressions(index: number): Promise<void> {
-    // 待核实：expression 接受数字索引或字符串名。
     if (this.model) this.model.expression(index)
   }
 
   getParameterRange(id: string): { min: number; max: number } {
-    // 待核实：pixi-live2d-display 无直接公开 API，走 internalModel.coreModel（Cubism Core）。
-    const m = this.model
+    // pixi-live2d-display 无直接公开 API，走 internalModel.coreModel（Cubism Core）。
+    const internal = (this.model as unknown as { internalModel?: { coreModel?: unknown } })?.internalModel
+    const cm = internal?.coreModel as
+      | { getParameterMinimumValue?: (id: string) => number; getParameterMaximumValue?: (id: string) => number }
+      | undefined
     try {
-      const cm = m?.internalModel?.coreModel
       if (cm?.getParameterMinimumValue && cm?.getParameterMaximumValue) {
-        return {
-          min: cm.getParameterMinimumValue(id),
-          max: cm.getParameterMaximumValue(id),
-        }
+        return { min: cm.getParameterMinimumValue(id), max: cm.getParameterMaximumValue(id) }
       }
     } catch {
       /* ignore */
@@ -102,10 +138,12 @@ export class Live2d {
   }
 
   setParameterValue(id: string, value: number | boolean): void {
-    // 待核实：Live2DModel.setParameterValue(id, number) 是否公开；布尔转 0/1。
     if (!this.model) return
     const v = typeof value === 'boolean' ? (value ? 1 : 0) : value
-    this.model.setParameterValue?.(id, v)
+    // Live2DModel.setParameterValue 在 0.4.0 通过内部代理暴露，用可选链兜底。
+    const setter = (this.model as unknown as { setParameterValue?: (id: string, v: number) => void })
+      .setParameterValue
+    setter?.(id, v)
   }
 
   destroy(): void {

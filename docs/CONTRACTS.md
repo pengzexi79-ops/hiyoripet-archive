@@ -5,11 +5,16 @@
 ## C1 前端 `Live2d` 单例（`src/core/live2d.ts`）
 
 ```ts
+export interface ModelExpression {
+  name: string;
+  file: string;
+}
+
 export interface ModelMeta {
   width: number;
   height: number;
-  motions: Record<string, unknown>;        // 动作组，如 tap_body / pinch_in / idle
-  expressions: Array<{ name: string; file: string }>;
+  motions: Record<string, unknown[]>;        // 动作组，键为组名（如 Idle / TapBody），值为该组动作定义数组
+  expressions: ModelExpression[];            // 表情（name 取自 .exp3.json 的 Name）
 }
 
 export class Live2d {
@@ -20,10 +25,16 @@ export class Live2d {
   async load(path: string): Promise<ModelMeta>;             // 扫描 .model3.json；资源路径经 convertFileSrc 转 asset://
   destroy(): void;                                         // 必须彻底释放，防内存泄漏
   resizeModel(size: ModelMeta): void;                      // 缩放居中
+  // ── 渲染/驱动 ──
   async playMotion(group: string, index: number): Promise<void>;
   async playExpressions(index: number): Promise<void>;
   getParameterRange(id: string): { min: number; max: number };
   setParameterValue(id: string, value: number | boolean): void;
+  // ── M2 互动 ──
+  hitTest(x: number, y: number): string[];                 // 返回命中的 hit area 名称数组（model3.json HitAreas.Name）
+  getMotionGroups(): string[];                             // 列出所有动作组名
+  async playMotionRandom(group: string): Promise<void>;    // 随机播组内某动作
+  async playExpressionRandom(): Promise<void>;             // 随机播表情
 }
 ```
 

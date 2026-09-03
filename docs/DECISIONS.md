@@ -46,9 +46,11 @@
 - 良性告警：`.rsrc merge failure: multiple non-default manifests`（Tauri manifest 与 MinGW 默认 manifest 合并提示），**不影响产物**。
 - 决策影响：任何在本机跑 `cargo build`（或 `pnpm tauri build`）的会话，都必须带上述 PATH（MinGW bin）且依赖 `.cargo/config.toml` 的 `rustflags`；新建 crate 同此约束。
 
-## D7 渲染库版本锁定：PIXI v7 + pixi-live2d-display@0.4.0（禁用 v8）
-- 理由：`pixi-live2d-display` 最新稳定版 **0.4.0（4 年前）仅兼容 PixiJS v6/v7**，对 PIXI v8（彻底重写、API 不兼容）无官方对应版本。若误用 v8 会编译/运行期全盘报错。
-- 决策：前端渲染锁定 `pixi.js@^7` + `pixi-live2d-display@0.4.0`（官方样例 Hiyori 是 Cubism 4，走 `/cubism4` 入口）。
-- Cubism 4 运行时硬依赖：需 `live2dcubismcore.min.js`（Cubism Core）暴露为全局 `window.Live2DCubismCore`，由 `pixi-live2d-display/cubism4` 引用。该文件需 vendoring 到 `public/` 并由 `index.html` 的 `<script>` 在模块脚本前预加载（直接外链不稳定，勿用于生产）。
-- 影响：`package.json` 依赖锁 v7；`src/core/live2d.ts` 按 v0.4.0 API 写（`Live2DModel.from` / `model.motion` / `model.expression` / `model.setParameterValue` / `model.on('hit')`）。
-- 状态：API 细节（motions/expressions 枚举键、getParameterRange 实现）待 pixi 装好后用 `tsc` 核实，先以「待核实」标注。
+## D7 渲染库版本锁定：PIXI **v6** + pixi-live2d-display@0.4.0（禁用 v7/v8）
+- 理由：`pixi-live2d-display@0.4.0`（4 年前最后稳定版）的 `peerDependencies` **明确写 `@pixi/core`/`@pixi/display`/`@pixi/loaders`/`@pixi/math`/`@pixi/sprite`/`@pixi/utils` 全为 `^6`**。PixiJS **v7 把这些 `@pixi/*` 拆分包合并进了 `pixi.js` 内部包**，导致 `pixi-live2d-display` 的 `import ... from '@pixi/core'` 在 v7 下**根本解析不到包**，编译/运行期直接崩。v8 更是整体重写，更不可行。
+- 决策：前端渲染锁定 **`pixi.js@^6.5.10`** + `pixi-live2d-display@0.4.0`（官方样例 Hiyori 是 Cubism 4，走 `/cubism4` 入口，该子路径 export 在 0.4.0 中确实存在）。
+- ⚠️ 早期草拟误写"v6/v7 兼容"，已据 `peerDependencies` 实测纠正为 **仅 v6**。凡涉及 pixi 版本之处一律 v6。
+- `new PIXI.Application({ view, backgroundAlpha:0, resizeTo, resolution, antialias, autoStart })` 构造器写法在 v6/v7 通用（v8 才改 `await app.init()`），故 `src/core/live2d.ts` 代码无需为降级 v6 改动。
+- Cubism 4 运行时硬依赖：需 `live2dcubismcore.min.js`（Cubism Core）暴露为全局 `window.Live2DCubismCore`，由 `pixi-live2d-display/cubism4` 引用。该文件**不在 GitHub 仓库**（框架仓库仅 75 文件、无 `.min.js`），须从 Live2D 官方 SDK 包（`https://cubism.live2d.com/sdk-web/bin/CubismSdkForWeb-*.zip`，已验证可达）解出的 `CubismWebFramework/Core/live2dcubismcore.min.js` vendoring 到 `public/cubism-core/` 并由 `index.html` 的 `<script>` 在模块脚本前预加载。
+- 影响：`package.json` 依赖锁 v6；`src/core/live2d.ts` 按 v0.4.0 API 写（`Live2DModel.from` / `model.motion` / `model.expression` / `model.setParameterValue` / `model.internalModel.coreModel`）。
+- 状态：pixi 已就位（pixi.js 6.5.x + pixi-live2d-display 0.4.0），`live2d.ts` 的「待核实」API 正在用 `tsc` 核实并修正。

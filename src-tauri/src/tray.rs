@@ -1,11 +1,11 @@
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::{TrayIconBuilder, TrayIconEvent},
+    tray::TrayIconBuilder,
     Manager,
 };
 
 /// 构建系统托盘：右键菜单含穿透开关与退出。
-/// [待核实：Tauri 2 tray/menu API（MenuItem::with_id、TrayIconBuilder、on_menu_event）以编译为准]
+/// [已核实 Tauri 2：MenuItem::with_id / Menu::with_items / TrayIconBuilder::with_id 均按官方写法；on_menu_event 首参为 &TrayIcon，退出/取窗走 app.app_handle()]
 pub fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let ct_on = MenuItem::with_id(app, "ct_on", "点击穿透：开（鼠标可点桌面）", true, None::<&str>)?;
     let ct_off = MenuItem::with_id(app, "ct_off", "点击穿透：关（窗口可交互）", true, None::<&str>)?;
@@ -17,14 +17,16 @@ pub fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .tooltip("Pet 桌宠")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "quit" => app.exit(0),
+            // on_menu_event 第一个参数是 &TrayIcon，不是 &App；
+            // 退出/取窗口都要经 app.app_handle()（AppHandle 实现 Manager）。
+            "quit" => app.app_handle().exit(0),
             "ct_on" => {
-                if let Some(w) = app.get_webview_window("main") {
+                if let Some(w) = app.app_handle().get_webview_window("main") {
                     let _ = w.set_ignore_cursor_events(true);
                 }
             }
             "ct_off" => {
-                if let Some(w) = app.get_webview_window("main") {
+                if let Some(w) = app.app_handle().get_webview_window("main") {
                     let _ = w.set_ignore_cursor_events(false);
                 }
             }

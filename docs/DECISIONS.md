@@ -33,4 +33,22 @@
 - 影响：
   - 编译命令必须走 GNU（cargo 默认 target 改为 gnu，或每次 `cargo build --target x86_64-pc-windows-gnu`）。
   - Tauri 2 在 windows-gnu 下链接 webview2 是已知风险点，需实测；若 `undefined reference to __imp_*` 类错误填不动，降级 Electron（需用户批准，见 AGENTS.md 环境约束）。
-- 状态：MinGW 下载/解压进行中，待验证 `gcc --version` + `cargo build` 可编 Tauri 最小壳。
+- 状态：**MinGW 已就位 + M0 编译通过**（2026-09-03）。webview2 链接 `undefined reference` 实际未发生，见 D8。
+
+## D8 windows-gnu 编译必踩的 6 个坑（已逐一解决，固化防复发）
+- 背景：本机唯一可行工具链 = winlibs MinGW-w64 + Rust `x86_64-pc-windows-gnu`（D6）。以下每一条都是 `cargo build` 实际撞到的硬错，按出现顺序：
+  1. **rustup 无默认工具链** → `rustup default stable-x86_64-pc-windows-gnu`（否则 `rustup could not choose a version`）。
+  2. **Cargo.toml 在 `src-tauri/` 不在仓库根** → 编译用 `cargo build --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-gnu`（从根跑报 `could not find Cargo.toml`）。
+  3. **`generate_context!` 缺前端目录** → 预建 `dist/index.html` 占位（正式前端由 `pnpm build` 生成并覆盖；`dist/` 在 .gitignore）。
+  4. **`dlltool.exe` 不在 PATH** → GNU target 用 `dlltool` 给 raw-dylib 生成导入库，rustc 按名调用；把 `.mingw/bin` 与 `.mingw/x86_64-w64-mingw32/bin` 持久化进**用户 PATH**（`.NET SetEnvironmentVariable`，避开 setx 1024 截断），编译命令里也显式 export。
+  5. **缺 `icons/icon.ico`** → Tauri 2 在 Windows 生成资源文件强制需要 `icon.ico`；用纯标准库 Python `_installers/make_ico.py` 生成多尺寸 BMP 型 ICO（windres 兼容）。
+  6. **`ld.exe: error: export ordinal too large`**（~9 万序数，超 PE 16 位上限）→ MinGW `ld` 默认导出所有静态库符号；在 `.cargo/config.toml` 的 `[target.x86_64-pc-windows-gnu]` 加 `rustflags = ["-C","link-arg=-Wl,--exclude-libs=ALL"]`，只保留 crate 自身显式导出符号。
+- 良性告警：`.rsrc merge failure: multiple non-default manifests`（Tauri manifest 与 MinGW 默认 manifest 合并提示），**不影响产物**。
+- 决策影响：任何在本机跑 `cargo build`（或 `pnpm tauri build`）的会话，都必须带上述 PATH（MinGW bin）且依赖 `.cargo/config.toml` 的 `rustflags`；新建 crate 同此约束。
+
+## D7 渲染库版本锁定：PIXI v7 + pixi-live2d-display@0.4.0（禁用 v8）
+- 理由：`pixi-live2d-display` 最新稳定版 **0.4.0（4 年前）仅兼容 PixiJS v6/v7**，对 PIXI v8（彻底重写、API 不兼容）无官方对应版本。若误用 v8 会编译/运行期全盘报错。
+- 决策：前端渲染锁定 `pixi.js@^7` + `pixi-live2d-display@0.4.0`（官方样例 Hiyori 是 Cubism 4，走 `/cubism4` 入口）。
+- Cubism 4 运行时硬依赖：需 `live2dcubismcore.min.js`（Cubism Core）暴露为全局 `window.Live2DCubismCore`，由 `pixi-live2d-display/cubism4` 引用。该文件需 vendoring 到 `public/` 并由 `index.html` 的 `<script>` 在模块脚本前预加载（直接外链不稳定，勿用于生产）。
+- 影响：`package.json` 依赖锁 v7；`src/core/live2d.ts` 按 v0.4.0 API 写（`Live2DModel.from` / `model.motion` / `model.expression` / `model.setParameterValue` / `model.on('hit')`）。
+- 状态：API 细节（motions/expressions 枚举键、getParameterRange 实现）待 pixi 装好后用 `tsc` 核实，先以「待核实」标注。

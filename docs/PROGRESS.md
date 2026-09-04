@@ -145,6 +145,6 @@
   - `D:/codex/pet/release/HiyoriPet_0.1.0_portable.zip`
   - `D:/codex/pet/release/HiyoriPet_0.1.0_x64-setup.exe`
   - `D:/Users/Windows/Desktop/日和桌宠.lnk`
-- SHA-256（重新构建后以最终文件现场复核为准）：便携 EXE/安装包/ZIP 均在发布目录生成。
+- SHA-256：`HiyoriPet.exe B9C4409AE58F0EBEACA2B207F7A6FE679A2E7FA04037725DEB5390F9ED8793C8`；`portable.zip 7087315761FBDEAE7027C3AAD55D5084DE4A904978AB920B476E15F008E94C01`；`setup.exe 6192A17A2AA61BBA5951EAC6A6D71331B23B3392EEF1D2526856F4BC43549D74`。
 - ⚠️ 穿透是 Tauri 原生窗口级能力：穿透后 WebView 不再接收右键，因此可靠恢复入口仍为托盘“点击穿透：关”；未虚假标注“双击右键关闭”为完成。
 - ⏳ 后续可选：真实 `FOXTOKEN_KEY` 远端模型调用、语音 ASR/TTS 完整链路；不影响当前本地文本桌宠开箱运行。

@@ -20,7 +20,7 @@ async def main():
                 msg = await asyncio.wait_for(ws.recv(), timeout=10)
                 print("<-", msg)
                 m = json.loads(msg)
-                if m.get("type") == "error":
+                if m.get("type") in ("error", "ai-response"):
                     break
             except asyncio.TimeoutError:
                 print("(接收超时，结束)")

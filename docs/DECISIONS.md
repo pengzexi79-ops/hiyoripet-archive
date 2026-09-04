@@ -62,3 +62,9 @@
 - 结论：滚轮缩放在桌面端同步扩大透明原生窗口，模型按初始 contain 基准放大，避免固定窗口裁剪人物。
 - 结论：动作/表情改为随机待机、点击、场景状态或 C4 扩展事件触发，不暴露设置按钮。
 - 约束：Tauri `set_ignore_cursor_events(true)` 是整个窗口级穿透；开启后 WebView 收不到鼠标，因此“穿透中双击右键关闭”不能仅靠 Vue/Tauri API 可靠实现，关闭保留托盘入口，Win32 原生输入钩子另立任务评估。
+
+## D11 Windows 发布形态：Tauri Release + PyInstaller sidecar（2026-09-04）
+- 决策：交付物必须由 `pnpm tauri build --target x86_64-pc-windows-gnu --bundles nsis` 生成；Debug `pet.exe` 只服务开发，绝不能作为用户应用，因为它读取 `devUrl=http://localhost:1420`。
+- 后端：FastAPI 使用 PyInstaller `--onefile --noconsole` 构建为 `pet-backend.exe`，由 Tauri 资源目录启动；Tauri 正常退出负责杀进程树，后端同时监视 `PET_PARENT_PID` 覆盖崩溃退出场景。
+- 可用性：未配置 `FOXTOKEN_KEY` 时默认本地陪伴回复；配置密钥后再走 foxtoken 流式通道，密钥仍只来自环境变量。
+- 发布：同时产出 NSIS 安装包和包含 `HiyoriPet.exe + WebView2Loader.dll + backend/` 的便携目录；应用图标使用用户提供的日和图。

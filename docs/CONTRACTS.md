@@ -129,3 +129,18 @@ type PetApiAction =
 ```
 
 动作/表情不在设置面板展示，由场景、状态、空闲行为或此扩展事件触发。未知动作组静默忽略。
+
+## C5 桌面发布与后端 sidecar 生命周期
+
+```text
+Tauri resource: $RESOURCE/backend/pet-backend.exe
+WebSocket:       ws://127.0.0.1:8000/ws
+Health:          GET http://127.0.0.1:8000/health
+```
+
+约束：
+- `backend/main.py` 是 PyInstaller 入口；发布构建使用 `--onefile --noconsole`，`conf.yaml` 必须作为数据文件打入。
+- Tauri 启动时由 `src-tauri/src/backend.rs` 启动 sidecar，并传入 `PET_PARENT_PID=<Tauri PID>`；禁止要求用户手动启动 Python/Uvicorn。
+- 正常退出时 Tauri 必须终止整个 sidecar 进程树；Tauri 崩溃或被强制结束时，sidecar 的父进程监视器必须自行退出。
+- `/health` 返回 `{ "status": "ok", "llm": "remote" | "local" }`。没有 `FOXTOKEN_KEY` 或远端调用失败时，文本消息仍返回 `ai-response`，使用本地陪伴回复，不把桌宠降级成不可用错误页。
+- 前端允许在 sidecar 解压启动期间短暂重连；发布包不得依赖 Vite `devUrl` 或端口 1420。

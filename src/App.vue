@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { LogicalSize } from '@tauri-apps/api/dpi'
 import { Live2d, type ModelMeta } from './core/live2d'
 import { PetSocket, type WsStatus } from './core/ws'
 import { Chat } from './core/chat'
@@ -14,6 +16,8 @@ const WS_URL = (import.meta as unknown as { env?: { VITE_WS_URL?: string } }).en
 const canvas = ref<HTMLCanvasElement | null>(null)
 const status = ref('初始化中…')
 const clickthrough = ref(false)
+const clickthroughBusy = ref(false)
+const rightClickTimer = ref<number | undefined>(undefined)
 const hasCore = ref(true)
 const meta = ref<ModelMeta | null>(null)
 const lastInteraction = ref(0)
@@ -25,13 +29,26 @@ const typing = ref(false)
 const inputText = ref('')
 const wsError = ref('')
 // 调试 HUD 默认隐藏：桌宠画面上不显示任何 UI（此前底部白色面板会挡住模型下半身且碍眼）。
-// 按 H 键唤出/收起。
-const hudVisible = ref(false)
+// ── 桌宠交互：仅保留 Hiyori，缩放由滚轮控制 ──
+const guideVisible = ref(true)
+const reaction = ref<{ text: string; x: number; y: number } | null>(null)
+const chatBubbleVisible = ref(false)
+const bubblePos = ref({ x: 0, y: 0, side: 'right' as 'left' | 'right' })
+const petLabelVisible = ref(false)
+const zoomLevel = ref(1)
 
 let pet: Live2d | null = null
 let socket: PetSocket | null = null
 let chat: Chat | null = null
 let idleTimer: number | undefined
+let guideTimer: number | undefined
+let reactionTimer: number | undefined
+let behaviorTimer: number | undefined
+let wanderTarget: { x: number; y: number } | null = null
+let rightClickCount = 0
+let stopPetVisibilityListener: UnlistenFn | undefined
+let press: { pointerId: number; clientX: number; clientY: number; x: number; y: number } | null = null
+let stopClickthroughListener: UnlistenFn | undefined
 
 async function loadModel() {
   if (!pet) return
@@ -40,6 +57,7 @@ async function loadModel() {
     const m = await pet.load(MODEL_URL)
     meta.value = m
     lastInteraction.value = Date.now()
+    petLabelVisible.value = true
     status.value = `已加载：${Object.keys(m.motions).length} 组动作 / ${m.expressions.length} 个表情`
   } catch (e) {
     status.value = `模型加载失败：${(e as Error)?.message ?? e}（请确认 public/models/Hiyori 已放入资产）`
@@ -58,20 +76,50 @@ onMounted(async () => {
   pet.initApp(canvas.value)
   await loadModel()
   startIdle()
+  startBehavior()
+  guideTimer = window.setTimeout(() => (guideVisible.value = false), 8000)
   window.addEventListener('keydown', onKey)
+  // 浏览器预览没有 Tauri IPC；仅在桌面壳中订阅托盘/原生快捷操作的同步事件。
+  if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+    stopClickthroughListener = await listen<boolean>('clickthrough-changed', (event) => {
+      clickthrough.value = event.payload
+      status.value = event.payload ? '穿透中：请用托盘关闭' : '可交互（可拖动）'
+    })
+    stopPetVisibilityListener = await listen('pet-opened', () => {
+      petLabelVisible.value = true
+      status.value = 'pet 已打开'
+      startBehavior()
+    })
+  }
   // M3：建立后端对话通道
+  window.addEventListener('resize', positionBubble)
+  window.addEventListener('pet-api-action', onApiAction as EventListener)
+  ;(window as Window & { petApi?: { dispatch: (action: PetApiAction) => void } }).petApi = {
+    dispatch: (action) => window.dispatchEvent(new CustomEvent('pet-api-action', { detail: action })),
+  }
   connectChat()
 })
 
-// H 键唤出/收起调试 HUD（输入框聚焦时不拦截，避免打字打不出 h）
+// Esc 关闭气泡；其余交互由鼠标完成
 function onKey(e: KeyboardEvent) {
   const t = e.target as HTMLElement | null
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
-  if (e.key === 'h' || e.key === 'H') hudVisible.value = !hudVisible.value
+  if (e.key === 'Escape') closeBubble()
 }
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey)
+  stopClickthroughListener?.()
+  stopClickthroughListener = undefined
+  stopPetVisibilityListener?.()
+  stopPetVisibilityListener = undefined
+  window.removeEventListener('resize', positionBubble)
+  window.removeEventListener('pet-api-action', onApiAction as EventListener)
+  delete (window as Window & { petApi?: unknown }).petApi
+  if (guideTimer) clearTimeout(guideTimer)
+  if (rightClickTimer.value) clearTimeout(rightClickTimer.value)
+  if (reactionTimer) clearTimeout(reactionTimer)
+  stopBehavior()
   stopIdle()
   chat?.destroy()
   socket?.close()
@@ -89,11 +137,15 @@ function connectChat() {
     if (s === 'open') wsError.value = ''
   })
   chat = new Chat(socket, pet, {
-    onSubtitle: (t) => (subtitle.value = t),
+    onSubtitle: (t) => {
+      subtitle.value = t
+      openBubble()
+    },
     onTyping: (b) => (typing.value = b),
     onError: (m) => {
       wsError.value = m
       subtitle.value = ''
+      openBubble()
     },
   })
   socket.connect()
@@ -104,6 +156,7 @@ function sendText() {
   if (!text || !chat) return
   subtitle.value = ''
   wsError.value = ''
+  openBubble()
   chat.sendText(text)
   inputText.value = ''
   lastInteraction.value = Date.now()
@@ -128,92 +181,232 @@ function stopIdle() {
   }
 }
 
+function startBehavior() {
+  stopBehavior()
+  behaviorTimer = window.setInterval(() => {
+    if (!pet || clickthrough.value) return
+    const b = pet.getBounds()
+    const halfW = Math.max(48, b.width / 2)
+    const halfH = Math.max(80, b.height / 2)
+    if (!wanderTarget) {
+      wanderTarget = {
+        x: halfW + 12 + Math.random() * Math.max(1, window.innerWidth - halfW * 2 - 24),
+        y: halfH + 12 + Math.random() * Math.max(1, window.innerHeight - halfH * 2 - 24),
+      }
+      pet.playMotionRandom('Idle').catch(() => {})
+      if (Math.random() < 0.55) pet.applyFace(FACES[Math.floor(Math.random() * FACES.length)])
+    }
+    const p = pet.getPosition()
+    const dx = wanderTarget.x - p.x
+    const dy = wanderTarget.y - p.y
+    const distance = Math.hypot(dx, dy)
+    if (distance < 8) wanderTarget = null
+    else pet.setPosition(p.x + dx / Math.max(1, distance) * 3, p.y + dy / Math.max(1, distance) * 3)
+    if (chatBubbleVisible.value) positionBubble()
+  }, 90)
+}
+function stopBehavior() {
+  if (behaviorTimer) clearInterval(behaviorTimer)
+  behaviorTimer = undefined
+  wanderTarget = null
+}
+
 // ── M2：点击互动（数据流 A）──
-async function onPointerDown(e: PointerEvent) {
-  if (clickthrough.value || !pet) return
-  const x = e.offsetX
-  const y = e.offsetY
-  const hits = pet.hitTest(x, y)
-  // 宽松命中：精确命中 Body，或落在模型包围盒内 → 都给互动反馈
-  // （Hiyori 的 HitAreas 仅 Body 一个且边界紧，纯 hitTest 会导致点身体没反应）
-  if (hits.includes('Body') || pet.containsPoint(x, y)) {
-    lastInteraction.value = Date.now()
-    status.value = hits.includes('Body') ? '被摸到了～' : '戳到啦～'
-    pet.playMotionRandom('TapBody').catch(() => {})
-    // 注：Hiyori 无表情文件（Expressions 为空），playExpressionRandom 会静默跳过
-    if (Math.random() < 0.4) pet.playExpressionRandom().catch(() => {})
+function randomFace() {
+  if (!pet) return
+  pet.applyFace(FACES[Math.floor(Math.random() * FACES.length)])
+  status.value = '换了个表情～'
+  lastInteraction.value = Date.now()
+}
+
+function showReaction(x: number, y: number) {
+  const marks = ['💗', '✨', '♪', '！']
+  reaction.value = { text: marks[Math.floor(Math.random() * marks.length)], x, y }
+  if (reactionTimer) clearTimeout(reactionTimer)
+  reactionTimer = window.setTimeout(() => (reaction.value = null), 900)
+}
+
+type PetApiAction =
+  | { type: 'motion'; group: string }
+  | { type: 'face'; name: 'smile' | 'surprise' | 'blush' | 'wink' }
+  | { type: 'say'; text: string }
+
+function onApiAction(event: Event) {
+  const action = (event as CustomEvent<PetApiAction>).detail
+  if (!pet || !action) return
+  lastInteraction.value = Date.now()
+  if (action.type === 'motion') pet.playMotionRandom(action.group).catch(() => {})
+  if (action.type === 'face') pet.applyFace(action.name)
+  if (action.type === 'say') {
+    subtitle.value = action.text
+    openBubble()
   }
-  // 任意位置都允许拖动窗口（点在模型上也能拖着走），解决「拖不动」
-  await getCurrentWindow().startDragging()
+}
+
+function positionBubble() {
+  if (!pet) return
+  const b = pet.getBounds()
+  const width = 236
+  const height = 142
+  const gap = 12
+  const right = window.innerWidth - (b.x + b.width)
+  const side = right >= width + gap ? 'right' : 'left'
+  const rawX = side === 'right' ? b.x + b.width + gap : b.x - width - gap
+  bubblePos.value = {
+    x: Math.max(8, Math.min(rawX, window.innerWidth - width - 8)),
+    y: Math.max(8, Math.min(b.y + b.height * 0.2, window.innerHeight - height - 8)),
+    side,
+  }
+}
+function openBubble() {
+  petLabelVisible.value = true
+  chatBubbleVisible.value = true
+  positionBubble()
+}
+function closeBubble() {
+  chatBubbleVisible.value = false
+}
+async function closePet() {
+  closeBubble()
+  petLabelVisible.value = false
+  stopBehavior()
+  await getCurrentWindow().hide().catch(() => {})
+}
+
+async function resizeForZoom(nextZoom: number) {
+  if (!pet) return
+  zoomLevel.value = Math.max(0.65, Math.min(2.2, nextZoom))
+  const targetWidth = Math.round(360 * zoomLevel.value)
+  const targetHeight = Math.round(600 * zoomLevel.value)
+  if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+    await getCurrentWindow().setSize(new LogicalSize(targetWidth, targetHeight)).catch(() => {})
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    if (meta.value) pet.resizeModel(meta.value)
+  } else {
+    pet.setZoom(zoomLevel.value)
+  }
+  positionBubble()
+}
+
+function interactAt(x: number, y: number) {
+  if (!pet) return
+  const hits = pet.hitTest(x, y)
+  if (!hits.length && !pet.containsPoint(x, y)) return
+  pet.focus(x, y)
+  openBubble()
+  showReaction(x, y)
+  lastInteraction.value = Date.now()
+  status.value = hits.includes('Head') ? '摸摸头～' : hits.includes('Body') ? '被摸到了～' : '戳到啦～'
+  pet.playMotionRandom('TapBody').catch(() => {})
+  if (meta.value?.expressions.length) pet.playExpressionRandom().catch(() => {})
+  else randomFace()
+}
+
+function onPointerDown(e: PointerEvent) {
+  if (e.button !== 0 || clickthroughBusy.value || clickthrough.value || !pet) return
+  closeBubble()
+  guideVisible.value = false
+  canvas.value?.setPointerCapture(e.pointerId)
+  press = { pointerId: e.pointerId, clientX: e.clientX, clientY: e.clientY, x: e.offsetX, y: e.offsetY }
+  pet.focus(e.offsetX, e.offsetY)
+}
+
+// 移动超过阈值才拖窗；短按到 pointerup 才互动，避免 startDragging 吞掉单击/右键。
+function onPointerMove(e: PointerEvent) {
+  if (clickthroughBusy.value || clickthrough.value || !pet) return
+  pet.focus(e.offsetX, e.offsetY)
+  if (!press || press.pointerId !== e.pointerId) return
+  if (Math.hypot(e.clientX - press.clientX, e.clientY - press.clientY) < 7) return
+  press = null
+  void getCurrentWindow().startDragging().catch(() => {})
+}
+function onPointerUp(e: PointerEvent) {
+  if (canvas.value?.hasPointerCapture(e.pointerId)) canvas.value.releasePointerCapture(e.pointerId)
+  if (!press || press.pointerId !== e.pointerId) return
+  const p = press
+  press = null
+  if (Math.hypot(e.clientX - p.clientX, e.clientY - p.clientY) < 7) interactAt(p.x, p.y)
+}
+function onPointerCancel(e: PointerEvent) {
+  if (canvas.value?.hasPointerCapture(e.pointerId)) canvas.value.releasePointerCapture(e.pointerId)
+  press = null
+}
+
+function onWheel(e: WheelEvent) {
+  void resizeForZoom(zoomLevel.value * (e.deltaY > 0 ? 0.9 : 1.1))
+  lastInteraction.value = Date.now()
+}
+
+function onContextMenu() {
+  rightClickCount += 1
+  if (rightClickTimer.value) clearTimeout(rightClickTimer.value)
+  rightClickTimer.value = window.setTimeout(() => { rightClickCount = 0 }, 360)
+  if (rightClickCount === 2) {
+    rightClickCount = 0
+    if (clickthrough.value) void toggle()
+    return
+  }
+  if (!clickthrough.value) void toggle()
 }
 
 async function toggle() {
-  clickthrough.value = !clickthrough.value
-  await invoke('toggle_clickthrough', { enabled: clickthrough.value })
-  status.value = clickthrough.value ? '穿透中（鼠标可点桌面）' : '可交互（可拖动）'
-  lastInteraction.value = Date.now()
+  if (clickthroughBusy.value) return
+  const next = !clickthrough.value
+  clickthroughBusy.value = true
+  closeBubble()
+  try {
+    await invoke('toggle_clickthrough', { enabled: next })
+    clickthrough.value = next
+    status.value = next ? '穿透中：请用托盘关闭（窗口暂不可点击）' : '可交互（可拖动）'
+    guideVisible.value = !next
+    lastInteraction.value = Date.now()
+  } catch (e) {
+    status.value = `穿透切换失败：${(e as Error)?.message ?? e}`
+  } finally {
+    clickthroughBusy.value = false
+  }
 }
 
-async function startDrag() {
-  if (clickthrough.value) return
-  await getCurrentWindow().startDragging()
-}
-
-function testMotion(group: string) {
-  lastInteraction.value = Date.now()
-  pet?.playMotionRandom(group)
-}
-function testExpression() {
-  lastInteraction.value = Date.now()
-  pet?.playExpressionRandom()
-}
-
-const wsDot: Record<WsStatus, string> = {
-  connecting: '#f0a020',
-  open: '#2ecc71',
-  closed: '#999',
-  error: '#e74c3c',
-}
 </script>
 
 <template>
   <div class="wrapper">
-    <canvas ref="canvas" class="stage" @pointerdown="onPointerDown"></canvas>
+    <canvas
+      ref="canvas"
+      class="stage"
+      @pointerdown="onPointerDown"
+      @pointermove="onPointerMove"
+      @pointerup="onPointerUp"
+      @pointercancel="onPointerCancel"
+      @contextmenu.prevent.stop="onContextMenu"
+      @wheel.prevent.stop="onWheel"
+    ></canvas>
 
-    <div v-if="subtitle" class="subtitle">{{ subtitle }}<span v-if="typing" class="caret">▌</span></div>
-
-    <!-- 调试 HUD：默认隐藏（按 H 唤出）。此前它常驻底部，白色面板既碍眼又挡住模型下半身。 -->
-    <div v-if="hudVisible" class="hud" :class="{ disabled: !hasCore }">
-      <div class="status">
-        {{ status }}
-        <span class="ws" :style="{ background: wsDot[wsStatus] }" :title="`后端：${wsStatus}`"></span>
+    <div
+      v-if="reaction"
+      class="reaction"
+      :style="{ left: reaction.x + 'px', top: reaction.y + 'px' }"
+    >{{ reaction.text }}</div>
+    <div v-if="petLabelVisible" class="pet-label">pet</div>
+    <div
+      v-if="chatBubbleVisible"
+      class="chat-bubble"
+      :class="bubblePos.side"
+      :style="{ left: bubblePos.x + 'px', top: bubblePos.y + 'px' }"
+      @pointerdown.stop
+      @click.stop
+    >
+      <div class="bubble-head"><strong>pet</strong><button type="button" @click="closeBubble">×</button></div>
+      <div v-if="subtitle" class="bubble-text">{{ subtitle }}<span v-if="typing" class="caret">▌</span></div>
+      <div class="bubble-input-row">
+        <input v-model="inputText" type="text" placeholder="和日和聊聊…" @keydown.enter="sendText" />
+        <button type="button" @click="sendText">发送</button>
       </div>
-      <button v-if="hasCore" @mousedown.stop @click="toggle">切换穿透</button>
-
-      <div v-if="meta" class="row">
-        <span class="lbl">动作</span>
-        <button v-for="g in Object.keys(meta.motions)" :key="g" @mousedown.stop @click="testMotion(g)">{{ g }}</button>
-      </div>
-      <div v-if="meta && meta.expressions.length" class="row">
-        <span class="lbl">表情</span>
-        <button @mousedown.stop @click="testExpression">随机</button>
-      </div>
-
-      <div class="row chat">
-        <input
-          v-model="inputText"
-          class="chat-input"
-          type="text"
-          placeholder="和桌宠说点什么…"
-          @mousedown.stop
-          @keydown.enter="sendText"
-        />
-        <button @mousedown.stop @click="sendText">发送</button>
-      </div>
-      <div v-if="wsError" class="err">⚠ {{ wsError }}</div>
-
-      <div class="tip">点模型→互动 · 任意位置按住可拖窗口 · 按 H 收起本面板 · 右键托盘退出</div>
+      <button class="dismiss-pet" type="button" @click="closePet">取消宠物</button>
+      <div v-if="wsError" class="bubble-error">⚠ {{ wsError }}</div>
     </div>
+    <div v-if="guideVisible" class="guide">点击宠物互动 · 按住拖动 · 滚轮缩放 · 右键开启穿透</div>
+
   </div>
 </template>
 
@@ -233,12 +426,80 @@ body {
   width: 100vw;
   height: 100vh;
   position: relative;
+  background: transparent !important;
 }
 .stage {
   width: 100%;
   height: 100%;
   display: block;
+  background: transparent !important;
+  touch-action: none;
 }
+.pet-label {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  z-index: 20;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #3d526b;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+}
+.chat-bubble {
+  position: absolute;
+  z-index: 60;
+  width: 236px;
+  box-sizing: border-box;
+  padding: 9px;
+  border: 1px solid rgba(91, 117, 145, 0.18);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #2f435a;
+  box-shadow: 0 8px 24px rgba(31, 55, 78, 0.2);
+}
+.chat-bubble::after {
+  content: '';
+  position: absolute;
+  top: 28px;
+  width: 12px;
+  height: 12px;
+  background: inherit;
+  border-left: inherit;
+  border-bottom: inherit;
+  transform: rotate(45deg);
+}
+.chat-bubble.right::after { left: -7px; }
+.chat-bubble.left::after { right: -7px; transform: rotate(225deg); }
+.bubble-head, .bubble-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.bubble-head { justify-content: space-between; margin-bottom: 6px; }
+.bubble-head button {
+  border: 0; background: transparent; color: #8493a3; font-size: 18px; cursor: pointer;
+}
+.bubble-text {
+  min-height: 28px;
+  max-height: 72px;
+  overflow: auto;
+  margin-bottom: 7px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.bubble-input-row input {
+  min-width: 0; flex: 1; padding: 6px 8px; border: 1px solid #d7e0e8; border-radius: 9px; outline: none;
+}
+.bubble-input-row button, .dismiss-pet {
+  border: 0; border-radius: 9px; padding: 6px 8px; background: #6f9bc5; color: white; cursor: pointer;
+}
+.dismiss-pet {
+  margin-top: 7px; background: transparent; color: #8898a8; font-size: 11px; padding: 2px 0;
+}
+.bubble-error { margin-top: 5px; color: #e74c3c; font-size: 11px; }
 .subtitle {
   position: absolute;
   left: 50%;
@@ -256,64 +517,33 @@ body {
 .caret {
   opacity: 0.5;
 }
-.hud {
+.reaction {
   position: absolute;
+  z-index: 40;
+  transform: translate(-50%, -70%);
+  font-size: 26px;
+  pointer-events: none;
+  animation: pop-away 0.9s ease-out forwards;
+}
+@keyframes pop-away {
+  0% { opacity: 0; transform: translate(-50%, -40%) scale(0.6); }
+  25% { opacity: 1; transform: translate(-50%, -80%) scale(1.15); }
+  100% { opacity: 0; transform: translate(-50%, -150%) scale(0.9); }
+}
+.guide {
+  position: absolute;
+  z-index: 50;
   left: 50%;
-  bottom: 14px;
+  bottom: 48px;
   transform: translateX(-50%);
-  color: #234;
-  font-size: 12px;
-  background: rgba(255, 255, 255, 0.75);
-  padding: 6px 10px;
-  border-radius: 8px;
+  width: max-content;
+  max-width: calc(100vw - 56px);
+  padding: 5px 9px;
+  border-radius: 12px;
+  background: rgba(35, 45, 58, 0.78);
+  color: white;
+  font-size: 11px;
   text-align: center;
-  max-width: 300px;
-  pointer-events: auto;
-}
-.hud.disabled {
-  opacity: 0.7;
-}
-.hud button {
-  margin: 3px 2px 0;
-  cursor: pointer;
-}
-.hud .ws {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-left: 6px;
-  vertical-align: middle;
-}
-.row {
-  margin-top: 4px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px;
-  justify-content: center;
-  align-items: center;
-}
-.row.chat {
-  margin-top: 6px;
-}
-.chat-input {
-  flex: 1;
-  min-width: 120px;
-  font-size: 12px;
-  padding: 3px 6px;
-  border: 1px solid #cdd;
-  border-radius: 6px;
-}
-.lbl {
-  opacity: 0.6;
-  margin-right: 2px;
-}
-.tip {
-  margin-top: 4px;
-  opacity: 0.6;
-}
-.err {
-  margin-top: 4px;
-  color: #e74c3c;
+  pointer-events: none;
 }
 </style>

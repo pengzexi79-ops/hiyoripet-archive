@@ -3,7 +3,7 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { LogicalSize } from '@tauri-apps/api/dpi'
+import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi'
 import { Live2d, type ModelMeta } from './core/live2d'
 import { PetSocket, type WsStatus } from './core/ws'
 import { Chat } from './core/chat'
@@ -279,9 +279,24 @@ async function resizeForZoom(nextZoom: number) {
   const targetWidth = Math.round(360 * zoomLevel.value)
   const targetHeight = Math.round(600 * zoomLevel.value)
   if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
-    await getCurrentWindow().setSize(new LogicalSize(targetWidth, targetHeight)).catch(() => {})
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    const appWindow = getCurrentWindow()
+    const [beforePosition, beforeSize] = await Promise.all([
+      appWindow.outerPosition().catch(() => null),
+      appWindow.outerSize().catch(() => null),
+    ])
+    await appWindow.setSize(new LogicalSize(targetWidth, targetHeight)).catch(() => {})
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    pet.setZoom(zoomLevel.value)
     if (meta.value) pet.resizeModel(meta.value)
+    if (beforePosition && beforeSize) {
+      const afterSize = await appWindow.outerSize().catch(() => null)
+      if (afterSize) {
+        await appWindow.setPosition(new PhysicalPosition(
+          Math.round(beforePosition.x + (beforeSize.width - afterSize.width) / 2),
+          Math.round(beforePosition.y + beforeSize.height - afterSize.height),
+        )).catch(() => {})
+      }
+    }
   } else {
     pet.setZoom(zoomLevel.value)
   }

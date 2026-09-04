@@ -75,7 +75,8 @@ export class Live2d {
     if (!this.model || !this.app) return
     const sw = this.app.screen.width
     const sh = this.app.screen.height
-    const scale = Math.min(sw / (size.width || 1), sh / (size.height || 1)) * 0.92
+    // contain 缩放（Math.min 保证宽高都不溢出 → 全身可见），留 4% 边距。
+    const scale = Math.min(sw / (size.width || 1), sh / (size.height || 1)) * 0.96
     this.model.scale.set(scale)
     this.model.anchor.set(0.5, 0.5)
     this.model.x = sw / 2
@@ -86,6 +87,17 @@ export class Live2d {
   /** 命中检测：返回点 (x,y) 命中的 hit area 名称数组（model3.json 的 HitAreas.Name）。空数组=未命中。 */
   hitTest(x: number, y: number): string[] {
     return this.model?.hitTest(x, y) ?? []
+  }
+
+  /**
+   * 宽松命中：点是否落在模型可见包围盒内（world space，即 canvas CSS 像素）。
+   * 用途：Hiyori 的 HitAreas 只有 Body 一个且边界较紧，仅靠 hitTest 会出现「点身体没反应」；
+   * 桌宠场景下凡是点在模型范围内都应给反馈，故用包围盒兜底。
+   */
+  containsPoint(x: number, y: number): boolean {
+    if (!this.model) return false
+    const b = this.model.getBounds()
+    return x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height
   }
 
   /** 列出所有动作组名（如 ['Idle','TapBody']）。 */

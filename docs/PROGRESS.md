@@ -106,6 +106,17 @@
   - **冒烟期间修复的 bug**：`build_tts/build_llm/build_asr` 原用 `default_*` 配置**键**（`foxtoken`/`edge`/`stub`）做 provider 分发，但 TTS 配置键 `edge` ≠ provider 字段 `edge-tts`，导致 `ValueError: 未知 TTS provider: edge`、首条 WS 消息即崩。已改为按 `cfg.provider`（配置内 provider 字段）分发，配置键与 provider 类型解耦（见 DECISIONS D4）。
 - **待办**：本机 `cd backend && pip install -r requirements.txt && uvicorn server:app`；桌面 `pnpm tauri dev`；前端输入框说话，宠物回字幕 + 口型。
 
+## M3 UX 修复（2026-09-04 用户首次真机实测反馈）
+沙箱看不到画面，以下全是用户肉眼反馈后定位修复的（**运行时问题只能靠真机暴露**）：
+1. **「有个框」+「看不到全身」** → 根因：M2 为验收加的调试 HUD（`rgba(255,255,255,0.75)` 白底面板）常驻窗口底部，在 320×320 的小窗里几乎占掉下半屏，**既碍眼又挡住模型下半身**。
+   - 修复：HUD 改为**默认隐藏**，按 `H` 键唤出/收起（输入框聚焦时不拦截按键）。
+2. **窗口太小** → 320×320 改为 **360×600**（竖版贴合人物比例），模型更大更清楚，`resizeModel` 缩放系数 0.92→0.96。
+3. **「点不动/拖不动」** → 两处根因：
+   - 命中判定过严：`hitTest` 只认 HitAreas，而 **Hiyori 的 HitAreas 仅 `Body` 一个且边界紧**，容易点空 → 新增 `Live2d.containsPoint(x,y)`（模型包围盒）做**宽松命中兜底**，点在模型范围内就给互动反馈。
+   - 拖动区域受限：原逻辑只有「点空白」才 `startDragging()` → 改为**任意位置都可拖动**（点在模型上也能拖着走），互动与拖动不再互斥。
+4. **「没有互动」的隐藏原因**：Hiyori 的 **Expressions 为 0**（无表情文件），所以「随机表情」按钮点了永远没反应。动作组实际只有 `Idle`(9) / `TapBody`(1)。保留 `playExpressionRandom` 但会静默跳过。
+5. **换装**：当前 Hiyori 只有单套服装（单个 `.moc3`），换衣需额外模型资产，属后续功能（M4/M5）。
+
 ## 下一步（M3 收尾 → M4）
 1. 本机验证后端启动 + WS 文本对话（设 `FOXTOKEN_KEY`）。
 2. 接真实 TTS（Edge TTS → 前端播放 `audio` + volumes 驱动口型）；接本地 ASR（sherpa-onnx）→ `audio-chunk` 通道。

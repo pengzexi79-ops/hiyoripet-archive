@@ -24,6 +24,9 @@ const subtitle = ref('')
 const typing = ref(false)
 const inputText = ref('')
 const wsError = ref('')
+// 调试 HUD 默认隐藏：桌宠画面上不显示任何 UI（此前底部白色面板会挡住模型下半身且碍眼）。
+// 按 H 键唤出/收起。
+const hudVisible = ref(false)
 
 let pet: Live2d | null = null
 let socket: PetSocket | null = null
@@ -55,11 +58,20 @@ onMounted(async () => {
   pet.initApp(canvas.value)
   await loadModel()
   startIdle()
+  window.addEventListener('keydown', onKey)
   // M3：建立后端对话通道
   connectChat()
 })
 
+// H 键唤出/收起调试 HUD（输入框聚焦时不拦截，避免打字打不出 h）
+function onKey(e: KeyboardEvent) {
+  const t = e.target as HTMLElement | null
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
+  if (e.key === 'h' || e.key === 'H') hudVisible.value = !hudVisible.value
+}
+
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKey)
   stopIdle()
   chat?.destroy()
   socket?.close()
@@ -118,18 +130,21 @@ function stopIdle() {
 
 // ── M2：点击互动（数据流 A）──
 async function onPointerDown(e: PointerEvent) {
-  if (clickthrough.value || !pet || !canvas.value) return
+  if (clickthrough.value || !pet) return
   const x = e.offsetX
   const y = e.offsetY
   const hits = pet.hitTest(x, y)
-  if (hits.includes('Body')) {
+  // 宽松命中：精确命中 Body，或落在模型包围盒内 → 都给互动反馈
+  // （Hiyori 的 HitAreas 仅 Body 一个且边界紧，纯 hitTest 会导致点身体没反应）
+  if (hits.includes('Body') || pet.containsPoint(x, y)) {
     lastInteraction.value = Date.now()
-    status.value = '被摸到了～'
+    status.value = hits.includes('Body') ? '被摸到了～' : '戳到啦～'
     pet.playMotionRandom('TapBody').catch(() => {})
+    // 注：Hiyori 无表情文件（Expressions 为空），playExpressionRandom 会静默跳过
     if (Math.random() < 0.4) pet.playExpressionRandom().catch(() => {})
-  } else {
-    await getCurrentWindow().startDragging()
   }
+  // 任意位置都允许拖动窗口（点在模型上也能拖着走），解决「拖不动」
+  await getCurrentWindow().startDragging()
 }
 
 async function toggle() {
@@ -167,7 +182,8 @@ const wsDot: Record<WsStatus, string> = {
 
     <div v-if="subtitle" class="subtitle">{{ subtitle }}<span v-if="typing" class="caret">▌</span></div>
 
-    <div class="hud" :class="{ disabled: !hasCore }">
+    <!-- 调试 HUD：默认隐藏（按 H 唤出）。此前它常驻底部，白色面板既碍眼又挡住模型下半身。 -->
+    <div v-if="hudVisible" class="hud" :class="{ disabled: !hasCore }">
       <div class="status">
         {{ status }}
         <span class="ws" :style="{ background: wsDot[wsStatus] }" :title="`后端：${wsStatus}`"></span>
@@ -196,7 +212,7 @@ const wsDot: Record<WsStatus, string> = {
       </div>
       <div v-if="wsError" class="err">⚠ {{ wsError }}</div>
 
-      <div class="tip">点模型身体→互动 · 点空白→拖窗口 · 右键托盘退出</div>
+      <div class="tip">点模型→互动 · 任意位置按住可拖窗口 · 按 H 收起本面板 · 右键托盘退出</div>
     </div>
   </div>
 </template>

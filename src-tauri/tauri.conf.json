@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "Pet",
-        "width": 320,
-        "height": 320,
+        "width": 360,
+        "height": 600,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,

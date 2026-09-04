@@ -32,6 +32,7 @@ export class Live2d {
   setParameterValue(id: string, value: number | boolean): void;
   // ── M2 互动 ──
   hitTest(x: number, y: number): string[];                 // 返回命中的 hit area 名称数组（model3.json HitAreas.Name）
+  containsPoint(x: number, y: number): boolean;            // 宽松命中：点是否落在模型包围盒内（兜底用）
   getMotionGroups(): string[];                             // 列出所有动作组名
   async playMotionRandom(group: string): Promise<void>;    // 随机播组内某动作
   async playExpressionRandom(): Promise<void>;             // 随机播表情
@@ -41,6 +42,12 @@ export class Live2d {
 约束：
 - `load` 接受**任意** `.model3.json` 目录，不写死模型名（见 DECISIONS D3）。
 - `destroy` 后必须从 PIXI stage 移除并 `model.destroy()`，否则切换模型内存上涨。
+- **坐标语义**：`hitTest`/`containsPoint` 入参均为 **world space（canvas CSS 像素）**。
+  `Live2DModel.hitTest` 内部已调 `toModelPosition()` 自行转换，**调用方不要重复转换**。
+- **宽松命中约定**：互动判定应为 `hitTest(x,y).includes('Body') || containsPoint(x,y)`。
+  原因：Hiyori 的 HitAreas 仅 `Body` 一个且边界紧，单靠 `hitTest` 会出现「点身体没反应」。
+- **拖动与互动不互斥**：`onPointerDown` 里判定互动后**仍要调** `startDragging()`，
+  保证任意位置都能拖动窗口（点在模型上也能拖着走）。
 
 ## C2 WebSocket 消息协议（前端 ↔ 后端）
 

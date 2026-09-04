@@ -5,7 +5,7 @@
 ## 分层（自上而下，禁止跨层直连）
 
 ```
-L6 表现层   Vue 组件 / 设置面板 / 托盘菜单 / 字幕气泡
+L6 表现层   Vue 组件 / 托盘菜单 / 聊天气泡 / 互动反馈
 L5 交互层   useDevice / useDrag / useTray → 行为仲裁 arbiter
 L4 状态层   Pinia：model / emotion / config
 L3 渲染层   Live2d 单例（PIXI Application + Live2DModel + 参数驱动）
@@ -36,7 +36,7 @@ D:/codex/pet/
 │  ├─ core/live2d.ts             # Live2d 单例（initApp/load/destroy/resizeModel/playMotion/playExpressions/setParameterValue）
 │  ├─ stores/{model,emotion,config}.ts   # Pinia
 │  ├─ composables/{useDevice,useDrag,useTray}.ts
-│  └─ components/                # 设置面板 / 气泡 / 字幕
+│  └─ components/                # 气泡 / 字幕 / 互动表现
 ├─ src-tauri/                    # Rust 侧
 │  ├─ Cargo.toml
 │  ├─ build.rs

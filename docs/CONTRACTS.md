@@ -33,9 +33,14 @@ export class Live2d {
   // ── M2 互动 ──
   hitTest(x: number, y: number): string[];                 // 返回命中的 hit area 名称数组（model3.json HitAreas.Name）
   containsPoint(x: number, y: number): boolean;            // 宽松命中：点是否落在模型包围盒内（兜底用）
+  getBounds(): { x: number; y: number; width: number; height: number }; // world-space 包围盒
+  getPosition(): { x: number; y: number };                 // 模型中心点（world space）
+  setPosition(x: number, y: number): void;                 // 在画布内设置模型中心点
   getMotionGroups(): string[];                             // 列出所有动作组名
   async playMotionRandom(group: string): Promise<void>;    // 随机播组内某动作
   async playExpressionRandom(): Promise<void>;             // 随机播表情
+  get zoom(): number;                                      // 相对初始 contain 尺寸的缩放
+  setZoom(z: number): void;                                // [0.35, 3]，浏览器预览使用；桌面端由窗口尺寸配合
 }
 ```
 
@@ -111,3 +116,16 @@ class TTSInterface(Protocol):
       model: gpt-5.5
   ```
 - 密钥只走环境变量，**不写进仓库**。
+
+## C4 桌宠扩展动作事件（前端窗口 API）
+
+外部脚本或后续 API 适配器可调用 `window.petApi?.dispatch(action)`，不直接依赖 Live2D 实例：
+
+```ts
+type PetApiAction =
+  | { type: 'motion'; group: string }
+  | { type: 'face'; name: 'smile' | 'surprise' | 'blush' | 'wink' }
+  | { type: 'say'; text: string };
+```
+
+动作/表情不在设置面板展示，由场景、状态、空闲行为或此扩展事件触发。未知动作组静默忽略。

@@ -55,3 +55,10 @@
 - Cubism 4 运行时硬依赖：需 `live2dcubismcore.min.js`（Cubism Core）暴露为全局 `window.Live2DCubismCore`，由 `pixi-live2d-display/cubism4` 引用。该文件**不在 GitHub 仓库**（框架仓库仅 75 文件、无 `.min.js`），须从 Live2D 官方 SDK 包（`https://cubism.live2d.com/sdk-web/bin/CubismSdkForWeb-*.zip`，已验证可达）解出的 `CubismWebFramework/Core/live2dcubismcore.min.js` vendoring 到 `public/cubism-core/` 并由 `index.html` 的 `<script>` 在模块脚本前预加载。
 - 影响：`package.json` 依赖锁 v6；`src/core/live2d.ts` 按 v0.4.0 API 写（`Live2DModel.from` / `model.motion` / `model.expression` / `model.setParameterValue` / `model.internalModel.coreModel`）。
 - 状态：pixi 已就位（pixi.js 6.5.x + pixi-live2d-display 0.4.0），`live2d.ts` 的「待核实」API 正在用 `tsc` 核实并修正。
+
+
+## D10 桌宠交互收敛（2026-09-04）
+- 结论：产品内仅加载 Hiyori（日和），移除角色切换、换衣选项和三条杠菜单；点击宠物直接打开可输入聊天气泡，`pet` 标签随窗口打开显示，取消宠物执行隐藏窗口。
+- 结论：滚轮缩放在桌面端同步扩大透明原生窗口，模型按初始 contain 基准放大，避免固定窗口裁剪人物。
+- 结论：动作/表情改为随机待机、点击、场景状态或 C4 扩展事件触发，不暴露设置按钮。
+- 约束：Tauri `set_ignore_cursor_events(true)` 是整个窗口级穿透；开启后 WebView 收不到鼠标，因此“穿透中双击右键关闭”不能仅靠 Vue/Tauri API 可靠实现，关闭保留托盘入口，Win32 原生输入钩子另立任务评估。

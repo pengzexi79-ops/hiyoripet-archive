@@ -69,3 +69,23 @@ D:/codex/pet/
 ```
 定时器(空闲 N 秒/时间戳/系统事件) → arbiter 判定 idle → 随机待机动作 + 情绪衰减 + 主动搭话(概率)
 ```
+
+## M5 实际发布结构（2026-09-04）
+
+```text
+src-tauri/src/backend.rs                       # sidecar 启动、隐藏控制台、退出时杀进程树
+src-tauri/resources/backend/pet-backend.exe    # 本机构建输入（生成物，不进 Git）
+backend/main.py                                # PyInstaller/Uvicorn 入口 + PET_PARENT_PID 监视
+release/HiyoriPet/                             # 本地便携交付目录（生成物，不进 Git）
+```
+
+发布运行流：
+```text
+HiyoriPet.exe
+  -> Tauri 从 $RESOURCE/backend/pet-backend.exe 启动 FastAPI
+  -> Vue 的 PetSocket 重连到 ws://127.0.0.1:8000/ws
+  -> 无 API key：本地规则回复；有 FOXTOKEN_KEY：foxtoken 流式回复
+  -> 托盘退出：Tauri taskkill 进程树；异常退出：Python 监视父 PID 后自退
+```
+
+主动行为在桌面壳中以窗口为移动单位：空闲 12 秒后在当前显示器工作区内缓慢游走，点击、拖动、聊天、隐藏或穿透状态会暂停；浏览器预览仅保留画布内移动作为降级。

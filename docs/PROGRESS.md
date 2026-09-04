@@ -131,3 +131,20 @@
 - ✅ 滚轮缩放改为桌面端同步扩大透明窗口，模型按 contain 基准保持整体可见；浏览器预览仍使用模型缩放。
 - ✅ 空闲期间增加窗口内随机游走、随机待机动作和参数化表情；新增 `window.petApi.dispatch()` 扩展事件（C4）。
 - ⚠️ 原生窗口级穿透仍有平台边界：穿透后右键事件不会进入 WebView，双击右键关闭未宣称完成；当前可靠关闭路径为系统托盘。
+
+## M5 可落地桌面发布完成（2026-09-04 23:20）
+- ✅ 使用用户提供的 1280×1280 日和图片重新生成 Windows/安装包图标（源 JPG SHA-256：`E529E60859AED97FA1C177D68CC3DB61C39DE0445967E13A66CBC77F7C729AE9`）。
+- ✅ 后端增加 PyInstaller 入口并打成 31,276,199 字节的 `pet-backend.exe`；`/health` 返回 `status=ok,llm=local`，WS `ping→pong`、无密钥文本→本地 `ai-response` 冒烟通过。
+- ✅ Tauri Release 自动启动/回收后端；实测强制结束桌宠父进程后两个 PyInstaller 进程均自动退出，端口 8000 释放。
+- ✅ 修复滚轮缩放：原生窗口与模型同时按倍率变化，缩放时保持底部中心锚点，不再只扩大透明裁剪框或只显示局部。
+- ✅ 主动行为升级为真实桌面游走：空闲 12 秒后移动原生窗口，范围限制在当前显示器工作区；点击、拖动、聊天、隐藏、穿透时暂停，并随机触发待机动作/参数表情。
+- ✅ 真正 Release 构建成功：`pnpm exec tsc --noEmit`、`pnpm build`、GNU `cargo check`、`pnpm tauri build --target x86_64-pc-windows-gnu --bundles nsis` 全部通过；仅保留已知良性 MinGW `.rsrc merge failure` 警告。
+- ✅ Release 实际启动验证：Vite 端口 1420 未监听，应用仍持续运行；自动启动的 `/health` 正常；Windows 窗口可访问性实测点击人物后出现聊天输入、发送、关闭和“取消宠物”控件。
+- ✅ 交付物：
+  - `D:/codex/pet/release/HiyoriPet/HiyoriPet.exe`
+  - `D:/codex/pet/release/HiyoriPet_0.1.0_portable.zip`
+  - `D:/codex/pet/release/HiyoriPet_0.1.0_x64-setup.exe`
+  - `D:/Users/Windows/Desktop/日和桌宠.lnk`
+- SHA-256（重新构建后以最终文件现场复核为准）：便携 EXE/安装包/ZIP 均在发布目录生成。
+- ⚠️ 穿透是 Tauri 原生窗口级能力：穿透后 WebView 不再接收右键，因此可靠恢复入口仍为托盘“点击穿透：关”；未虚假标注“双击右键关闭”为完成。
+- ⏳ 后续可选：真实 `FOXTOKEN_KEY` 远端模型调用、语音 ASR/TTS 完整链路；不影响当前本地文本桌宠开箱运行。

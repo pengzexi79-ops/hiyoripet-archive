@@ -2,7 +2,7 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
 import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi'
 import { Live2d, type ModelMeta } from './core/live2d'
 import { PetSocket, type WsStatus } from './core/ws'
@@ -45,10 +45,14 @@ let guideTimer: number | undefined
 let reactionTimer: number | undefined
 let behaviorTimer: number | undefined
 let wanderTarget: { x: number; y: number } | null = null
+let desktopWanderTarget: { x: number; y: number } | null = null
+let desktopPosition: { x: number; y: number } | null = null
+let desktopMoveBusy = false
 let rightClickCount = 0
 let stopPetVisibilityListener: UnlistenFn | undefined
 let press: { pointerId: number; clientX: number; clientY: number; x: number; y: number } | null = null
 let stopClickthroughListener: UnlistenFn | undefined
+let stopWindowMovedListener: UnlistenFn | undefined
 
 async function loadModel() {
   if (!pet) return
@@ -81,6 +85,12 @@ onMounted(async () => {
   window.addEventListener('keydown', onKey)
   // 浏览器预览没有 Tauri IPC；仅在桌面壳中订阅托盘/原生快捷操作的同步事件。
   if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+    const appWindow = getCurrentWindow()
+    const initialPosition = await appWindow.outerPosition().catch(() => null)
+    if (initialPosition) desktopPosition = { x: initialPosition.x, y: initialPosition.y }
+    stopWindowMovedListener = await appWindow.onMoved(({ payload }) => {
+      desktopPosition = { x: payload.x, y: payload.y }
+    })
     stopClickthroughListener = await listen<boolean>('clickthrough-changed', (event) => {
       clickthrough.value = event.payload
       status.value = event.payload ? '穿透中：请用托盘关闭' : '可交互（可拖动）'
@@ -88,6 +98,8 @@ onMounted(async () => {
     stopPetVisibilityListener = await listen('pet-opened', () => {
       petLabelVisible.value = true
       status.value = 'pet 已打开'
+      lastInteraction.value = Date.now()
+      desktopWanderTarget = null
       startBehavior()
     })
   }
@@ -113,6 +125,8 @@ onBeforeUnmount(() => {
   stopClickthroughListener = undefined
   stopPetVisibilityListener?.()
   stopPetVisibilityListener = undefined
+  stopWindowMovedListener?.()
+  stopWindowMovedListener = undefined
   window.removeEventListener('resize', positionBubble)
   window.removeEventListener('pet-api-action', onApiAction as EventListener)
   delete (window as Window & { petApi?: unknown }).petApi
@@ -181,10 +195,57 @@ function stopIdle() {
   }
 }
 
+async function stepDesktopWander() {
+  if (!pet || desktopMoveBusy) return
+  desktopMoveBusy = true
+  try {
+    const appWindow = getCurrentWindow()
+    if (!desktopPosition) {
+      const position = await appWindow.outerPosition()
+      desktopPosition = { x: position.x, y: position.y }
+    }
+    if (!desktopWanderTarget) {
+      const [monitor, size] = await Promise.all([currentMonitor(), appWindow.outerSize()])
+      if (!monitor) return
+      const minX = monitor.workArea.position.x
+      const minY = monitor.workArea.position.y
+      const maxX = Math.max(minX, minX + monitor.workArea.size.width - size.width)
+      const maxY = Math.max(minY, minY + monitor.workArea.size.height - size.height)
+      desktopWanderTarget = {
+        x: Math.round(minX + Math.random() * Math.max(1, maxX - minX)),
+        y: Math.round(minY + Math.random() * Math.max(1, maxY - minY)),
+      }
+      pet.playMotionRandom('Idle').catch(() => {})
+      if (Math.random() < 0.65) pet.applyFace(FACES[Math.floor(Math.random() * FACES.length)])
+    }
+    const dx = desktopWanderTarget.x - desktopPosition.x
+    const dy = desktopWanderTarget.y - desktopPosition.y
+    const distance = Math.hypot(dx, dy)
+    if (distance < 5) {
+      desktopWanderTarget = null
+      lastInteraction.value = Date.now()
+      return
+    }
+    const step = Math.min(3, distance)
+    desktopPosition = {
+      x: Math.round(desktopPosition.x + dx / distance * step),
+      y: Math.round(desktopPosition.y + dy / distance * step),
+    }
+    await appWindow.setPosition(new PhysicalPosition(desktopPosition.x, desktopPosition.y))
+  } finally {
+    desktopMoveBusy = false
+  }
+}
+
 function startBehavior() {
   stopBehavior()
   behaviorTimer = window.setInterval(() => {
-    if (!pet || clickthrough.value) return
+    if (!pet || clickthrough.value || chatBubbleVisible.value || press) return
+    if (Date.now() - lastInteraction.value < 12000) return
+    if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+      void stepDesktopWander()
+      return
+    }
     const b = pet.getBounds()
     const halfW = Math.max(48, b.width / 2)
     const halfH = Math.max(80, b.height / 2)
@@ -194,21 +255,22 @@ function startBehavior() {
         y: halfH + 12 + Math.random() * Math.max(1, window.innerHeight - halfH * 2 - 24),
       }
       pet.playMotionRandom('Idle').catch(() => {})
-      if (Math.random() < 0.55) pet.applyFace(FACES[Math.floor(Math.random() * FACES.length)])
     }
     const p = pet.getPosition()
     const dx = wanderTarget.x - p.x
     const dy = wanderTarget.y - p.y
     const distance = Math.hypot(dx, dy)
-    if (distance < 8) wanderTarget = null
-    else pet.setPosition(p.x + dx / Math.max(1, distance) * 3, p.y + dy / Math.max(1, distance) * 3)
-    if (chatBubbleVisible.value) positionBubble()
-  }, 90)
+    if (distance < 8) {
+      wanderTarget = null
+      lastInteraction.value = Date.now()
+    } else pet.setPosition(p.x + dx / distance * 3, p.y + dy / distance * 3)
+  }, 120)
 }
 function stopBehavior() {
   if (behaviorTimer) clearInterval(behaviorTimer)
   behaviorTimer = undefined
   wanderTarget = null
+  desktopWanderTarget = null
 }
 
 // ── M2：点击互动（数据流 A）──
@@ -270,6 +332,7 @@ async function closePet() {
   closeBubble()
   petLabelVisible.value = false
   stopBehavior()
+  desktopWanderTarget = null
   await getCurrentWindow().hide().catch(() => {})
 }
 
@@ -291,10 +354,12 @@ async function resizeForZoom(nextZoom: number) {
     if (beforePosition && beforeSize) {
       const afterSize = await appWindow.outerSize().catch(() => null)
       if (afterSize) {
-        await appWindow.setPosition(new PhysicalPosition(
-          Math.round(beforePosition.x + (beforeSize.width - afterSize.width) / 2),
-          Math.round(beforePosition.y + beforeSize.height - afterSize.height),
-        )).catch(() => {})
+        const nextPosition = {
+          x: Math.round(beforePosition.x + (beforeSize.width - afterSize.width) / 2),
+          y: Math.round(beforePosition.y + beforeSize.height - afterSize.height),
+        }
+        await appWindow.setPosition(new PhysicalPosition(nextPosition.x, nextPosition.y)).catch(() => {})
+        desktopPosition = nextPosition
       }
     }
   } else {
@@ -320,6 +385,7 @@ function interactAt(x: number, y: number) {
 function onPointerDown(e: PointerEvent) {
   if (e.button !== 0 || clickthroughBusy.value || clickthrough.value || !pet) return
   closeBubble()
+  desktopWanderTarget = null
   guideVisible.value = false
   canvas.value?.setPointerCapture(e.pointerId)
   press = { pointerId: e.pointerId, clientX: e.clientX, clientY: e.clientY, x: e.offsetX, y: e.offsetY }
@@ -333,6 +399,8 @@ function onPointerMove(e: PointerEvent) {
   if (!press || press.pointerId !== e.pointerId) return
   if (Math.hypot(e.clientX - press.clientX, e.clientY - press.clientY) < 7) return
   press = null
+  desktopWanderTarget = null
+  lastInteraction.value = Date.now()
   void getCurrentWindow().startDragging().catch(() => {})
 }
 function onPointerUp(e: PointerEvent) {

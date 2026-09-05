@@ -178,3 +178,12 @@
   - D:/codex/pet/release/HiyoriPet_0.1.3_x64-setup.exe
   - D:/Users/Windows/Desktop/日和桌宠.lnk
 - SHA-256：HiyoriPet.exe ED572ADFDBE0F0344E1B3466402057D5721366F6859C17B5A088676EDBA45A34；pet-backend.exe B1AEEFB75FA5739EB0A716870F748748EAAE1B2A692F0E7D41DF6753445D6799；portable.zip A56FC06248ED1295F8F5556096C34B98F07071BEB24F58EEC2B3E7A0B263C546；setup.exe FE30503E2EF923EF2E60B723B0BAF94EFA8E88AF5C0E183B345FC5CC7E833E02。
+
+## 0.1.3 UI/交互最终收尾（2026-09-05）
+- ✅ 左键点击不再打开聊天气泡；实测 Release 点击日和只保留人物画面与命中反馈，未出现聊天窗口。
+- ✅ 右键点击人物打开 API 设置面板；面板按人物方向定位并受窗口边界限制，关闭按钮、遮罩和 Esc 均可关闭，再次右键可关闭。
+- ✅ API 面板内容完整：状态、国内外常用预设、自定义官方/中转地址、协议、模型和 API Key；面板开启时暂停桌面游走，隐藏时清理面板和自主对话计时器。
+- ✅ 自主讲话采用低频节流：空闲、窗口焦点/可见性、拖动、缩放等场景偶尔触发；无 API 使用本地陪伴句，已配置 API 才发送场景摘要，不读取键盘/文件/浏览内容。
+- ✅ 最终 Release 重新构建并覆盖便携目录、NSIS 安装包和桌面快捷方式；Vite 端口 1420 未启动，Release 可直接运行。
+- ✅ 最终产物实测：单实例 1 个 `HiyoriPet.exe`；重复启动后第二启动器退出；后端两个同路径进程为 PyInstaller 父子结构，`/health` 返回 `status=ok,llm=local`。
+- SHA-256：`HiyoriPet.exe 3DD306E2C5865E16ABC3161452D8A847B8803AC12AD8D1C8CA411A84BFAA1606`；`pet-backend.exe B1AEEFB75FA5739EB0A716870F748748EAAE1B2A692F0E7D41DF6753445D6799`；`portable.zip CB3141F3FA92F0CCFD0AA555CE9FFF187161F3DA78A9FDB406D43EC99FC5DFCE`；`setup.exe 7986582F35AFF31C97C2AC384D736F8657FBCCA22C3D18D883DD6E0A3D8E6A28`。

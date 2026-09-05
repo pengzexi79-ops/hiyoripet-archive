@@ -87,9 +87,14 @@ export class Live2d {
     if (Array.isArray(rawExpr)) {
       for (const e of rawExpr) expressions.push({ name: e?.name ?? '', file: e?.file ?? '' })
     }
+    // Container.width/height can still be zero before PIXI completes its first bounds pass.
+    // The internal model canvas is ready when Live2DModel.from resolves and is stable across DPI values.
+    const internalSize = m?.internalModel as unknown as { width?: number; height?: number }
+    const width = Number(internalSize?.width)
+    const height = Number(internalSize?.height)
     return {
-      width: m?.width ?? 0,
-      height: m?.height ?? 0,
+      width: Number.isFinite(width) && width > 0 ? width : (m?.width ?? 0),
+      height: Number.isFinite(height) && height > 0 ? height : (m?.height ?? 0),
       motions,
       expressions,
     }

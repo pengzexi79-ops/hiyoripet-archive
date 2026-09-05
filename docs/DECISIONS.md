@@ -61,7 +61,7 @@
 - 结论：产品内仅加载 Hiyori（日和），移除角色切换、换衣选项和三条杠菜单；点击宠物直接打开可输入聊天气泡，`pet` 标签随窗口打开显示，取消宠物执行隐藏窗口。
 - 结论：滚轮缩放在桌面端同步扩大透明原生窗口，模型按初始 contain 基准放大，避免固定窗口裁剪人物。
 - 结论：动作/表情改为随机待机、点击、场景状态或 C4 扩展事件触发，不暴露设置按钮。
-- 约束：Tauri `set_ignore_cursor_events(true)` 是整个窗口级穿透；开启后 WebView 收不到鼠标，因此“穿透中双击右键关闭”不能仅靠 Vue/Tauri API 可靠实现，关闭保留托盘入口，Win32 原生输入钩子另立任务评估。
+- 结论：右键不绑定窗口模式切换，也不注册全局鼠标钩子；交互仅由左键、拖动、滚轮与托盘承担。
 
 ## D11 Windows 发布形态：Tauri Release + PyInstaller sidecar（2026-09-04）
 - 决策：交付物必须由 `pnpm tauri build --target x86_64-pc-windows-gnu --bundles nsis` 生成；Debug `pet.exe` 只服务开发，绝不能作为用户应用，因为它读取 `devUrl=http://localhost:1420`。

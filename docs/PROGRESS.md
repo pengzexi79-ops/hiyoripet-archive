@@ -154,3 +154,15 @@
 - 🐛 隐藏入口不明显：托盘增加“隐藏宠物”，气泡文案改为“隐藏桌宠”。
 - 🐛 本地模式未明确告知 API 状态：聊天内显示未接入提示，并提供可视化 API 配置。
 - ⏳ 支持 OpenAI-compatible、Anthropic Messages、Gemini 官方/中转地址；密钥使用 Windows DPAPI 加密保存。
+
+## HiyoriPet 0.1.1 修复发布（2026-09-05）
+- ✅ 复现用户截图问题：旧 `0.1.0` 发布目录同时存在 3 个 `HiyoriPet.exe`；已停止旧实例并删除旧 0.1.0 安装包/便携包，避免继续误用。
+- ✅ Tauri 2 single-instance：连续启动两次实测主进程始终为 1，第二个启动器退出并唤醒已有窗口，且不会创建第二个 sidecar。
+- ✅ 隐藏/恢复：聊天气泡提供“隐藏桌宠”，托盘提供“隐藏宠物/显示宠物”；Win32 顶层窗口实测隐藏后 `Visible=false`，重复启动后恢复 `Visible=true`，主进程仍为 1。
+- ✅ 无 API 提示：实际 WebView2 运行时点击日和后可见“当前未接入 API / 添加 API / 隐藏桌宠”；配置面板包含协议、接口地址、模型和密钥。
+- ✅ API 配置：支持 `openai-compatible`、`anthropic-messages`、`gemini` 三类协议及自定义官方/中转地址；本地模拟服务验证三类请求格式均通过。
+- ✅ API Key 使用当前 Windows 用户 DPAPI 加密保存到 `%APPDATA%/HiyoriPet/api.json`，REST 状态接口不返回密钥；保存不自动发起计费请求，清除后回到本地模式。
+- ✅ 发布后端实测：`GET/POST/DELETE /api/config`、WS 初始/对话 `api-status`、本地 `ai-response` 全部通过；退出桌宠后 sidecar 自动退出且端口 8000 释放。
+- ✅ 门禁：`pnpm exec tsc --noEmit`、`pnpm build`、GNU `cargo check`、`pnpm tauri build --target x86_64-pc-windows-gnu --bundles nsis` 全绿；仅有既有良性 `.rsrc merge failure` 警告。
+- ✅ 交付：`D:/codex/pet/release/HiyoriPet_0.1.1_x64-setup.exe`、`D:/codex/pet/release/HiyoriPet_0.1.1_portable.zip`、桌面 `日和桌宠.lnk`。
+- SHA-256：`HiyoriPet.exe 490B903D32166C1B9A472EF56783C9B15A39F39C344F5B6F5DE5BB91FDAAE0A8`；`pet-backend.exe 336558C0DE2185E86F70C9473E99191FAFACCE54E82230C1731FFB2271C6B47D`；`portable.zip 4817CF22F7883D0B6A25540CEA6480A249658E7D856B0B8FB55B436961D95695`；`setup.exe A5285C1F6F2C4A171EFD6D2FA8F9ED4A73D979A1903473FCBB232E3A57DEE7AB`。

@@ -5,6 +5,7 @@ import base64
 import ctypes
 import json
 import os
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import AsyncIterator
@@ -97,7 +98,7 @@ def _endpoint(base: str, leaf: str, version: str = "v1") -> str:
     base = base.rstrip("/")
     if base.endswith("/" + leaf):
         return base
-    if base.endswith("/" + version):
+    if base.endswith("/" + version) or re.search(r"/v\d+(?:beta\d*)?$", base):
         return f"{base}/{leaf}"
     return f"{base}/{version}/{leaf}"
 
@@ -130,7 +131,11 @@ class UniversalLLM:
             "system": system,
             "messages": [m for m in messages if m.get("role") in ("user", "assistant")],
         }
-        headers = {"x-api-key": self.settings.api_key, "anthropic-version": "2023-06-01"}
+        headers = {
+            "x-api-key": self.settings.api_key,
+            "Authorization": f"Bearer {self.settings.api_key}",
+            "anthropic-version": "2023-06-01",
+        }
         async with aiohttp.ClientSession() as session:
             async with session.post(_endpoint(self.settings.base_url, "messages"), json=body, headers=headers) as response:
                 response.raise_for_status()
@@ -150,7 +155,14 @@ class UniversalLLM:
             body["system_instruction"] = {"parts": [{"text": system}]}
         url = _endpoint(self.settings.base_url, f"models/{self.settings.model}:generateContent", "v1beta")
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=body, headers={"x-goog-api-key": self.settings.api_key}) as response:
+            async with session.post(
+                url,
+                json=body,
+                headers={
+                    "x-goog-api-key": self.settings.api_key,
+                    "Authorization": f"Bearer {self.settings.api_key}",
+                },
+            ) as response:
                 response.raise_for_status()
                 data = await response.json()
         parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])

@@ -1,4 +1,3 @@
-use crate::window::set_clickthrough;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
@@ -8,10 +7,8 @@ use tauri::{
 pub fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let show_pet = MenuItem::with_id(app, "show_pet", "显示宠物", true, None::<&str>)?;
     let hide_pet = MenuItem::with_id(app, "hide_pet", "隐藏宠物", true, None::<&str>)?;
-    let ct_on = MenuItem::with_id(app, "ct_on", "点击穿透：开（鼠标可点桌面）", true, None::<&str>)?;
-    let ct_off = MenuItem::with_id(app, "ct_off", "点击穿透：关（窗口可交互）", true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "quit", "退出日和桌宠", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_pet, &hide_pet, &ct_on, &ct_off, &quit_i])?;
+    let menu = Menu::with_items(app, &[&show_pet, &hide_pet, &quit_i])?;
 
     let _tray = TrayIconBuilder::with_id("main-tray")
         .icon(app.default_window_icon().unwrap().clone())
@@ -21,19 +18,8 @@ pub fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             let app = tray.app_handle();
             match event.id.as_ref() {
                 "quit" => app.exit(0),
-                "ct_on" => {
-                    if let Some(w) = app.get_webview_window("main") {
-                        let _ = set_clickthrough(&w, true);
-                    }
-                }
-                "ct_off" => {
-                    if let Some(w) = app.get_webview_window("main") {
-                        let _ = set_clickthrough(&w, false);
-                    }
-                }
                 "show_pet" => {
                     if let Some(w) = app.get_webview_window("main") {
-                        let _ = set_clickthrough(&w, false);
                         let _ = w.show();
                         let _ = w.emit("pet-opened", ());
                     }

@@ -1,6 +1,5 @@
 mod backend;
 mod tray;
-mod window;
 
 use tauri::{Emitter, Manager};
 
@@ -9,17 +8,14 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window::set_clickthrough(&window, false);
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
                 let _ = window.emit("pet-opened", ());
             }
         }))
-        .invoke_handler(tauri::generate_handler![window::toggle_clickthrough])
         .setup(|app| {
             app.manage(backend::launch(app));
-            window::start_clickthrough_recovery(app.handle());
             tray::build_tray(app)?;
             Ok(())
         })

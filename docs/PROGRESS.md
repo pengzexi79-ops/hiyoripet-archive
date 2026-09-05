@@ -187,3 +187,19 @@
 - ✅ 最终 Release 重新构建并覆盖便携目录、NSIS 安装包和桌面快捷方式；Vite 端口 1420 未启动，Release 可直接运行。
 - ✅ 最终产物实测：单实例 1 个 `HiyoriPet.exe`；重复启动后第二启动器退出；后端两个同路径进程为 PyInstaller 父子结构，`/health` 返回 `status=ok,llm=local`。
 - SHA-256：`HiyoriPet.exe 3DD306E2C5865E16ABC3161452D8A847B8803AC12AD8D1C8CA411A84BFAA1606`；`pet-backend.exe B1AEEFB75FA5739EB0A716870F748748EAAE1B2A692F0E7D41DF6753445D6799`；`portable.zip CB3141F3FA92F0CCFD0AA555CE9FFF187161F3DA78A9FDB406D43EC99FC5DFCE`；`setup.exe 7986582F35AFF31C97C2AC384D736F8657FBCCA22C3D18D883DD6E0A3D8E6A28`。
+
+## 0.1.3 发布产物复核（2026-09-05）
+- ✅ 使用真实 Windows Release 产物验证，不依赖 Vite 开发服务器：`D:/codex/pet/release/HiyoriPet/HiyoriPet.exe` 启动后标题为“日和桌宠”，进程保持 Responding。
+- ✅ 真实 Release 首屏 `PrintWindow` 可见完整人物；窗口透明黑底捕获中仅显示模型，不存在原始长方形内容遮罩。实际屏幕冒烟截图中人物完整可见。
+- ✅ 真实 Release 右键打开 API 面板；面板打开后连续 2 秒采样窗口位置不变，证明游走暂停/宠物固定；关闭路径已保留关闭按钮、遮罩和 Esc。
+- ✅ 真实 Release 重复启动：`HiyoriPet.exe` 进程数保持 1；第二次启动不会新增桌宠或后端。
+- ✅ 真实 Release 游走边界：4 次窗口采样均落在当前工作区 `{X=0,Y=0,Width=2560,Height=1392}` 内，窗口完整尺寸保持在边界内。
+- ✅ 真实 Release sidecar：内嵌 `backend/pet-backend.exe` 健康检查返回 `{"status":"ok","llm":"local"}`；PyInstaller 父子双进程是 onefile 正常结构。退出后应用、sidecar 和 8000 端口已释放。
+- ✅ API 模拟 provider 冒烟：`/api/discover` 自动识别 `smoke-primary`、`smoke-worker`；`/api/test` 返回 connected=true、25ms；模型目录与 parallel 协作配置保存/读取正确；目录只含 DPAPI `encrypted_key`，不含明文 key。
+- ✅ 门禁复核：TypeScript `tsc --noEmit`、Vite production build、Python `compileall`、GNU `cargo check`、真实 Tauri NSIS Release 全部通过；仅有既有 MinGW `.rsrc merge failure: multiple non-default manifests` 非致命告警。
+- ✅ 当前发布目录已覆盖最新 Release 前端/sidecar、portable zip、NSIS 安装包；桌面快捷方式指向 `D:/codex/pet/release/HiyoriPet/HiyoriPet.exe`，图标使用日和资源。
+- 当前构建 SHA-256：
+  - `HiyoriPet.exe` `0A612B284F891A6362C21A9C502A086F85DDC4FACAEF46F91639141650D77FA2`
+  - `pet-backend.exe` `7E32C9CF6E9EF204CF659099B67C5B6763848CCD48CE5B85AC4513B74F388051`
+  - `HiyoriPet_0.1.3_portable.zip` `B0F43EBB44CAFDA776733AC6B0C2B41BA4BD5B72956CC5ACE8064EDA1B9FD4B3`
+  - `HiyoriPet_0.1.3_x64-setup.exe` `9632578DEBC4DAEDDFD4F33C9339A0AE18DBA99EF7FDBC6D0C0A9D4A3CE8056F`

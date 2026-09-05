@@ -42,6 +42,7 @@ def main() -> None:
         port=config.server.port,
         log_level="warning",
         access_log=False,
+        log_config=None,
     )
 
 

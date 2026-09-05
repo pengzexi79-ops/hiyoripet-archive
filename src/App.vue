@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
 import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi'
@@ -27,6 +27,8 @@ const inputText = ref('')
 const wsError = ref('')
 const apiStatus = ref<ApiStatus>({ configured: false, protocol: 'openai-compatible', base_url: '', model: '', source: 'local' })
 const apiPanelVisible = ref(false)
+const apiPanelPos = ref({ x: 0, y: 0 })
+const apiPanel = ref<HTMLElement | null>(null)
 const apiSaving = ref(false)
 const apiError = ref('')
 type ApiPreset = { id: string; label: string; protocol: ApiProtocol; baseUrl: string }
@@ -48,8 +50,10 @@ const apiForm = ref({ protocol: 'openai-compatible' as ApiProtocol, base_url: ''
 const guideVisible = ref(true)
 const reaction = ref<{ text: string; x: number; y: number } | null>(null)
 const chatBubbleVisible = ref(false)
+const bubble = ref<HTMLElement | null>(null)
 const bubblePos = ref({ x: 0, y: 0, side: 'right' as 'left' | 'right' })
 const zoomLevel = ref(1)
+const uiScale = computed(() => Math.max(0.85, Math.min(1.5, zoomLevel.value)))
 
 let pet: Live2d | null = null
 let socket: PetSocket | null = null
@@ -58,6 +62,9 @@ let idleTimer: number | undefined
 let guideTimer: number | undefined
 let reactionTimer: number | undefined
 let behaviorTimer: number | undefined
+let autonomyTimer: number | undefined
+let autonomyBusy = false
+let autonomyCooldownUntil = 0
 let wanderTarget: { x: number; y: number } | null = null
 let desktopWanderTarget: { x: number; y: number } | null = null
 let desktopPosition: { x: number; y: number } | null = null
@@ -99,6 +106,9 @@ onMounted(async () => {
   startBehavior()
   guideTimer = window.setTimeout(() => (guideVisible.value = false), 8000)
   window.addEventListener('keydown', onKey)
+  window.addEventListener('focus', onWindowFocus)
+  window.addEventListener('blur', onWindowBlur)
+  window.addEventListener('visibilitychange', onVisibilityChange)
   // 浏览器预览没有 Tauri IPC；仅在桌面壳中订阅托盘/原生快捷操作的同步事件。
   if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
     const appWindow = getCurrentWindow()
@@ -113,30 +123,53 @@ onMounted(async () => {
       nextWanderAt = Date.now() + 12000
       desktopWanderTarget = null
       startBehavior()
+      startAutonomy()
     })
     stopPetHiddenListener = await listen('pet-hidden', () => {
       closeBubble()
+      closeApiPanel()
+      stopAutonomy()
       stopBehavior()
     })
   }
   // M3：建立后端对话通道
   window.addEventListener('resize', positionBubble)
+  window.addEventListener('resize', positionApiPanel)
   window.addEventListener('pet-api-action', onApiAction as EventListener)
   ;(window as Window & { petApi?: { dispatch: (action: PetApiAction) => void } }).petApi = {
     dispatch: (action) => window.dispatchEvent(new CustomEvent('pet-api-action', { detail: action })),
   }
   connectChat()
+  startAutonomy()
 })
 
 // Esc 关闭气泡；其余交互由鼠标完成
 function onKey(e: KeyboardEvent) {
   const t = e.target as HTMLElement | null
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
-  if (e.key === 'Escape') closeBubble()
+  if (e.key === 'Escape') {
+    closeBubble()
+    closeApiPanel()
+  }
+}
+
+function onWindowFocus() {
+  maybeAutonomousTalk('你回到桌面了')
+}
+
+function onWindowBlur() {
+  maybeAutonomousTalk('你暂时离开了桌宠')
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') maybeAutonomousTalk('桌面重新亮起来了')
 }
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey)
+  window.removeEventListener('focus', onWindowFocus)
+  window.removeEventListener('blur', onWindowBlur)
+  window.removeEventListener('visibilitychange', onVisibilityChange)
   stopPetVisibilityListener?.()
   stopPetVisibilityListener = undefined
   stopPetHiddenListener?.()
@@ -144,6 +177,9 @@ onBeforeUnmount(() => {
   stopWindowMovedListener?.()
   stopWindowMovedListener = undefined
   window.removeEventListener('resize', positionBubble)
+  window.removeEventListener('resize', positionApiPanel)
+  if (autonomyTimer) clearTimeout(autonomyTimer)
+  autonomyTimer = undefined
   window.removeEventListener('pet-api-action', onApiAction as EventListener)
   delete (window as Window & { petApi?: unknown }).petApi
   if (guideTimer) clearTimeout(guideTimer)
@@ -169,6 +205,7 @@ function connectChat() {
     onSubtitle: (t) => {
       subtitle.value = t
       openBubble()
+      requestAnimationFrame(positionBubble)
     },
     onTyping: (b) => (typing.value = b),
     onError: (m) => {
@@ -182,6 +219,52 @@ function connectChat() {
   void fetchApiStatus().then(applyApiStatus).catch(() => {})
 }
 
+const LOCAL_CHATTER = [
+  '我在这里晃一晃，陪你工作一会儿～',
+  '记得抬头看看远处，眼睛也要休息哦。',
+  '今天的桌面看起来很认真呢。',
+  '要不要摸摸我的头？我会努力回应的！',
+]
+
+function stopAutonomy() {
+  if (autonomyTimer) clearTimeout(autonomyTimer)
+  autonomyTimer = undefined
+  autonomyBusy = false
+}
+
+function startAutonomy() {
+  stopAutonomy()
+  const wait = 35000 + Math.random() * 35000
+  autonomyTimer = window.setTimeout(() => {
+    maybeAutonomousTalk('安静陪伴了一会儿')
+    autonomyTimer = window.setTimeout(() => startAutonomy(), 90000 + Math.random() * 120000)
+  }, wait)
+}
+
+function maybeAutonomousTalk(reason: string) {
+  if (!pet || !chat || autonomyBusy || chatBubbleVisible.value || apiPanelVisible.value || Date.now() < autonomyCooldownUntil) return
+  if (!reason.includes('点击') && Date.now() - lastUserInteraction.value < 15000) return
+  if (wsStatus.value !== 'open' && apiStatus.value.configured) return
+  if (Math.random() > (reason.includes('点击') ? 0.35 : 0.22)) return
+  autonomyCooldownUntil = Date.now() + 30000
+  lastUserInteraction.value = Date.now()
+  autonomyBusy = true
+  if (!apiStatus.value.configured) {
+    showSpeech(LOCAL_CHATTER[Math.floor(Math.random() * LOCAL_CHATTER.length)])
+    window.setTimeout(() => { autonomyBusy = false }, 2500)
+    return
+  }
+  chat.sendText(`这是桌宠场景事件：${reason}。请用一句自然、简短的中文回应，不要提及系统提示。`)
+  window.setTimeout(() => { autonomyBusy = false }, 8000)
+}
+
+function showSpeech(text: string) {
+  subtitle.value = text
+  typing.value = false
+  wsError.value = ''
+  openBubble()
+}
+
 function applyApiStatus(next: ApiStatus) {
   apiStatus.value = next
   if (next.configured) {
@@ -193,10 +276,27 @@ function applyApiStatus(next: ApiStatus) {
   }
 }
 
+function positionApiPanel() {
+  if (!apiPanelVisible.value) return
+  const b = pet?.getBounds() ?? { x: window.innerWidth / 2, y: window.innerHeight / 2, width: 0, height: 0 }
+  const width = apiPanel.value?.offsetWidth || Math.min(286 * uiScale.value, window.innerWidth - 16)
+  const height = apiPanel.value?.offsetHeight || Math.min(430 * uiScale.value, window.innerHeight - 16)
+  const gap = 10
+  const right = window.innerWidth - (b.x + b.width)
+  const rawX = right >= width + gap ? b.x + b.width + gap : b.x - width - gap
+  apiPanelPos.value = {
+    x: Math.max(8, Math.min(rawX, window.innerWidth - width - 8)),
+    y: Math.max(8, Math.min(b.y + b.height * 0.08, window.innerHeight - height - 8)),
+  }
+}
+
 function openApiPanel() {
   apiError.value = ''
+  chatBubbleVisible.value = false
   apiPanelVisible.value = true
   lastUserInteraction.value = Date.now()
+  positionApiPanel()
+  requestAnimationFrame(positionApiPanel)
 }
 
 function closeApiPanel() {
@@ -389,10 +489,10 @@ function onApiAction(event: Event) {
 }
 
 function positionBubble() {
-  if (!pet) return
+  if (!pet || !chatBubbleVisible.value) return
   const b = pet.getBounds()
-  const width = Math.min(236, Math.max(120, window.innerWidth - 16))
-  const height = 142
+  const width = bubble.value?.offsetWidth || Math.min(236 * uiScale.value, Math.max(120, window.innerWidth - 16))
+  const height = bubble.value?.offsetHeight || Math.min(220 * uiScale.value, window.innerHeight - 16)
   const gap = 12
   const right = window.innerWidth - (b.x + b.width)
   const side = right >= width + gap ? 'right' : 'left'
@@ -404,15 +504,18 @@ function positionBubble() {
   }
 }
 function openBubble() {
+  apiPanelVisible.value = false
   chatBubbleVisible.value = true
   positionBubble()
+  requestAnimationFrame(positionBubble)
 }
 function closeBubble() {
   chatBubbleVisible.value = false
-  apiPanelVisible.value = false
 }
 async function closePet() {
   closeBubble()
+  closeApiPanel()
+  stopAutonomy()
   stopBehavior()
   desktopWanderTarget = null
   await getCurrentWindow().hide().catch(() => {})
@@ -448,6 +551,7 @@ async function resizeForZoom(nextZoom: number) {
     pet.setZoom(zoomLevel.value)
   }
   positionBubble()
+  positionApiPanel()
 }
 
 function interactAt(x: number, y: number) {
@@ -455,7 +559,6 @@ function interactAt(x: number, y: number) {
   const hits = pet.hitTest(x, y)
   if (!hits.length && !pet.containsPoint(x, y)) return
   pet.focus(x, y)
-  openBubble()
   showReaction(x, y)
   lastUserInteraction.value = Date.now()
   status.value = hits.includes('Head') ? '摸摸头～' : hits.includes('Body') ? '被摸到了～' : '戳到啦～'
@@ -463,6 +566,20 @@ function interactAt(x: number, y: number) {
   pet.playMotionRandom(tapCount % 3 === 0 || Math.random() < 0.35 ? 'Idle' : 'TapBody').catch(() => {})
   if (meta.value?.expressions.length && Math.random() < 0.35) pet.playExpressionRandom().catch(() => {})
   else randomFace()
+  maybeAutonomousTalk('被轻轻点击了')
+}
+
+function onContextMenu(e: MouseEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  if (!pet) return
+  const x = e.offsetX
+  const y = e.offsetY
+  if (!pet.containsPoint(x, y) && !pet.hitTest(x, y).length) return
+  guideVisible.value = false
+  desktopWanderTarget = null
+  if (apiPanelVisible.value) closeApiPanel()
+  else openApiPanel()
 }
 
 function onPointerDown(e: PointerEvent) {
@@ -484,6 +601,7 @@ function onPointerMove(e: PointerEvent) {
   press = null
   desktopWanderTarget = null
   lastUserInteraction.value = Date.now()
+  maybeAutonomousTalk('你把我拖到了新的位置')
   void getCurrentWindow().startDragging().catch(() => {})
 }
 function onPointerUp(e: PointerEvent) {
@@ -501,12 +619,13 @@ function onPointerCancel(e: PointerEvent) {
 function onWheel(e: WheelEvent) {
   void resizeForZoom(zoomLevel.value * (e.deltaY > 0 ? 0.9 : 1.1))
   lastUserInteraction.value = Date.now()
+  maybeAutonomousTalk('你调整了我的大小')
 }
 
 </script>
 
 <template>
-  <div class="wrapper">
+  <div class="wrapper" :style="{ '--ui-scale': String(uiScale) }">
     <canvas
       ref="canvas"
       class="stage"
@@ -515,13 +634,24 @@ function onWheel(e: WheelEvent) {
       @pointerup="onPointerUp"
       @pointercancel="onPointerCancel"
       @wheel.prevent.stop="onWheel"
+      @contextmenu.prevent.stop="onContextMenu"
     ></canvas>
 
-    <div v-if="apiPanelVisible" class="api-panel" @pointerdown.stop @click.stop>
+    <div v-if="apiPanelVisible" class="popup-scrim" @pointerdown="closeApiPanel" @contextmenu.prevent="closeApiPanel"></div>
+    <div
+      v-if="apiPanelVisible"
+      ref="apiPanel"
+      class="api-panel"
+      :style="{ left: apiPanelPos.x + 'px', top: apiPanelPos.y + 'px' }"
+      @pointerdown.stop
+      @click.stop
+       @contextmenu.prevent.stop
+    >
       <div class="panel-head">
-        <strong>连接 AI 对话</strong>
+        <div><strong>连接 AI 对话</strong><div class="panel-subtitle">右键宠物可再次打开 / 关闭</div></div>
         <button type="button" class="icon-button" aria-label="关闭 API 设置" @click="closeApiPanel">×</button>
       </div>
+      <div class="panel-status" :class="{ connected: apiStatus.configured }">{{ apiStatus.configured ? `已接入 · ${apiStatus.model}` : '当前未接入 API，将使用本地陪伴模式' }}</div>
       <label>服务 / 模型来源
         <select v-model="apiPreset" @change="selectApiPreset">
           <option v-for="preset in API_PRESETS" :key="preset.id" :value="preset.id">{{ preset.label }}</option>
@@ -558,6 +688,7 @@ function onWheel(e: WheelEvent) {
     >{{ reaction.text }}</div>
     <div
       v-if="chatBubbleVisible"
+      ref="bubble"
       class="chat-bubble"
       :class="bubblePos.side"
       :style="{ left: bubblePos.x + 'px', top: bubblePos.y + 'px' }"
@@ -579,7 +710,7 @@ function onWheel(e: WheelEvent) {
       <button class="dismiss-pet" type="button" @click="closePet">隐藏桌宠</button>
       <div v-if="wsError" class="bubble-error">⚠ {{ wsError }}</div>
     </div>
-    <div v-if="guideVisible" class="guide">点击宠物互动 · 按住拖动 · 滚轮缩放</div>
+    <div v-if="guideVisible" class="guide">左键互动 · 按住拖动 · 滚轮缩放 · 右键 API 设置</div>
 
   </div>
 </template>
@@ -601,6 +732,7 @@ body {
   height: 100vh;
   position: relative;
   background: transparent !important;
+  --ui-scale: 1;
 }
 .stage {
   width: 100%;
@@ -612,26 +744,30 @@ body {
 .chat-bubble {
   position: absolute;
   z-index: 60;
-  width: min(236px, calc(100vw - 16px));
+  width: min(calc(236px * var(--ui-scale)), calc(100vw - 16px));
   box-sizing: border-box;
-  padding: 9px;
+  padding: calc(9px * var(--ui-scale));
   border: 1px solid rgba(91, 117, 145, 0.18);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.96);
   color: #2f435a;
   box-shadow: 0 8px 24px rgba(31, 55, 78, 0.2);
 }
-.api-panel { position: absolute; z-index: 80; left: 50%; top: 50%; width: min(286px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow: auto; box-sizing: border-box; transform: translate(-50%, -50%); padding: 14px; border: 1px solid rgba(91, 117, 145, 0.2); border-radius: 16px; background: rgba(255, 255, 255, 0.98); color: #2f435a; box-shadow: 0 10px 30px rgba(31, 55, 78, 0.24); }
-.panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.popup-scrim { position: absolute; inset: 0; z-index: 70; background: transparent; }
+.api-panel { position: absolute; z-index: 80; width: min(calc(286px * var(--ui-scale)), calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow: auto; box-sizing: border-box; padding: calc(14px * var(--ui-scale)); border: 1px solid rgba(91, 117, 145, 0.2); border-radius: calc(16px * var(--ui-scale)); background: rgba(255, 255, 255, 0.98); color: #2f435a; box-shadow: 0 10px 30px rgba(31, 55, 78, 0.24); }
+.panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: calc(10px * var(--ui-scale)); }
+.panel-subtitle { margin-top: 2px; color: #8a98a6; font-size: calc(10px * var(--ui-scale)); }
+.panel-status { margin: 0 0 calc(8px * var(--ui-scale)); padding: calc(7px * var(--ui-scale)) calc(8px * var(--ui-scale)); border-radius: calc(9px * var(--ui-scale)); background: #fff8e8; color: #9a6d24; font-size: calc(11px * var(--ui-scale)); line-height: 1.35; }
+.panel-status.connected { background: #f0faf4; color: #3f8058; }
 .icon-button { border: 0; background: transparent; color: #8493a3; font-size: 20px; cursor: pointer; }
-.api-panel label { display: block; margin: 8px 0; color: #637489; font-size: 11px; }
-.api-panel input, .api-panel select { width: 100%; box-sizing: border-box; margin-top: 4px; padding: 7px 8px; border: 1px solid #d7e0e8; border-radius: 8px; outline: none; color: #2f435a; background: white; }
-.api-actions { display: flex; gap: 8px; margin-top: 10px; }
-.api-actions button { flex: 1; border: 0; border-radius: 9px; padding: 7px 8px; cursor: pointer; }
+.api-panel label { display: block; margin: calc(8px * var(--ui-scale)) 0; color: #637489; font-size: calc(11px * var(--ui-scale)); }
+.api-panel input, .api-panel select { width: 100%; box-sizing: border-box; margin-top: 4px; padding: calc(7px * var(--ui-scale)) calc(8px * var(--ui-scale)); border: 1px solid #d7e0e8; border-radius: calc(8px * var(--ui-scale)); outline: none; color: #2f435a; background: white; }
+.api-actions { display: flex; flex-wrap: wrap; gap: calc(8px * var(--ui-scale)); margin-top: calc(10px * var(--ui-scale)); }
+.api-actions button { flex: 1 1 110px; min-width: 0; border: 0; border-radius: calc(9px * var(--ui-scale)); padding: calc(7px * var(--ui-scale)) calc(8px * var(--ui-scale)); cursor: pointer; }
 .primary-action { background: #6f9bc5; color: white; }
 .secondary-action { background: #eef2f6; color: #637489; }
 .api-actions button:disabled { cursor: wait; opacity: 0.55; }
-.api-panel small { display: block; margin-top: 9px; color: #8a98a6; font-size: 10px; line-height: 1.4; }
+.api-panel small { display: block; margin-top: calc(9px * var(--ui-scale)); color: #8a98a6; font-size: calc(10px * var(--ui-scale)); line-height: 1.4; overflow-wrap: anywhere; }
 .chat-bubble::after {
   content: '';
   position: absolute;
@@ -655,8 +791,8 @@ body {
   border: 0; background: transparent; color: #8493a3; font-size: 18px; cursor: pointer;
 }
 .bubble-text {
-  min-height: 28px;
-  max-height: 72px;
+  min-height: calc(28px * var(--ui-scale));
+  max-height: calc(92px * var(--ui-scale));
   overflow: auto;
   margin-bottom: 7px;
   font-size: 13px;
@@ -665,7 +801,7 @@ body {
 .api-status { display: flex; width: 100%; justify-content: space-between; gap: 8px; margin: 0 0 8px; padding: 6px 8px; border: 1px solid #f0d9a6; border-radius: 8px; background: #fff8e8; color: #9a6d24; font-size: 11px; text-align: left; cursor: pointer; }
 .api-status.connected { border-color: #c7e4d2; background: #f0faf4; color: #3f8058; }
 .bubble-input-row input {
-  min-width: 0; flex: 1; padding: 6px 8px; border: 1px solid #d7e0e8; border-radius: 9px; outline: none;
+  min-width: 0; flex: 1; padding: calc(6px * var(--ui-scale)) calc(8px * var(--ui-scale)); border: 1px solid #d7e0e8; border-radius: 9px; outline: none;
 }
 .bubble-input-row button, .dismiss-pet {
   border: 0; border-radius: 9px; padding: 6px 8px; background: #6f9bc5; color: white; cursor: pointer;

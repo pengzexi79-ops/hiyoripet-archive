@@ -16,3 +16,6 @@ __pycache__/
 *.pyc
 src-tauri/resources/backend/*.exe
 release/
+
+# Local smoke-test scripts and screenshots
+_verification/

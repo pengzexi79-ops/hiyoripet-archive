@@ -30,6 +30,7 @@ export class Live2d {
   private model: Live2DModel | null = null
   // 加载/resize 时的 contain 基准缩放，zoom 相对它计算。
   private baseScale = 0
+  private zoomLevel = 1
   // 伪表情在 Cubism 每帧提交前回写，避免动作/眨眼覆盖；销毁模型时必须解绑。
   private paramOverrides: Record<string, number> = {}
   private faceTimer: number | undefined
@@ -108,7 +109,7 @@ export class Live2d {
     if (this.baseScale <= 0) {
       this.baseScale = Math.min(sw / (size.width || 1), sh / (size.height || 1)) * 0.96
     }
-    this.model.scale.set(this.baseScale * this.zoom)
+    this.model.scale.set(this.baseScale * this.zoomLevel)
     this.model.anchor.set(0.5, 0.5)
     this.model.x = sw / 2
     this.model.y = sh / 2
@@ -161,15 +162,14 @@ export class Live2d {
 
   /** 当前缩放倍率（1 = 加载时 contain 基准）。 */
   get zoom(): number {
-    if (!this.model) return 1
-    return this.model.scale.x / (this.baseScale || 1)
+    return this.zoomLevel
   }
 
   /** 设置缩放倍率，范围钳制 [0.35, 3]，缩放围绕模型锚点（中心）。 */
   setZoom(z: number): void {
     if (!this.model) return
-    const clamped = Math.max(0.35, Math.min(3, z))
-    this.model.scale.set((this.baseScale || 1) * clamped)
+    this.zoomLevel = Math.max(0.35, Math.min(3, z))
+    this.model.scale.set((this.baseScale || 1) * this.zoomLevel)
   }
 
   /** 参数化表情：不依赖 .exp3.json，Hiyori/Rice 等单表情模型也可用。 */
@@ -314,5 +314,6 @@ export class Live2d {
       this.model = null
     }
     this.baseScale = 0
+    this.zoomLevel = 1
   }
 }

@@ -103,6 +103,32 @@ def _endpoint(base: str, leaf: str, version: str = "v1") -> str:
     return f"{base}/{version}/{leaf}"
 
 
+def _image_data_url(value: str) -> tuple[str, str]:
+    match = re.match(r"^data:([^;]+);base64,(.+)$", value, re.DOTALL)
+    if not match:
+        raise ValueError("multimodal image must be a data URL")
+    return match.group(1), match.group(2)
+
+
+def _provider_content(message: dict, protocol: str):
+    text = str(message.get("content", ""))
+    image = message.get("image")
+    if not image:
+        return text
+    if protocol == "openai-compatible":
+        return [
+            {"type": "text", "text": text},
+            {"type": "image_url", "image_url": {"url": str(image)}},
+        ]
+    media_type, encoded = _image_data_url(str(image))
+    if protocol == "anthropic-messages":
+        return [
+            {"type": "text", "text": text},
+            {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": encoded}},
+        ]
+    raise ValueError("gemini image parts are converted separately")
+
+
 class UniversalLLM:
     def __init__(self, settings: ApiSettings):
         self.settings = settings.validate()
@@ -118,7 +144,8 @@ class UniversalLLM:
 
     async def _openai(self, messages: list[dict]) -> AsyncIterator[str]:
         client = AsyncOpenAI(base_url=self.settings.base_url, api_key=self.settings.api_key)
-        stream = await client.chat.completions.create(model=self.settings.model, messages=messages, stream=True)
+        request_messages = [{**message, "content": _provider_content(message, "openai-compatible")} for message in messages]
+        stream = await client.chat.completions.create(model=self.settings.model, messages=request_messages, stream=True)
         async for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
@@ -129,7 +156,10 @@ class UniversalLLM:
             "model": self.settings.model,
             "max_tokens": 512,
             "system": system,
-            "messages": [m for m in messages if m.get("role") in ("user", "assistant")],
+            "messages": [
+                {**message, "content": _provider_content(message, "anthropic-messages")}
+                for message in messages if message.get("role") in ("user", "assistant")
+            ],
         }
         headers = {
             "x-api-key": self.settings.api_key,
@@ -149,7 +179,11 @@ class UniversalLLM:
             if message.get("role") == "system":
                 continue
             role = "model" if message.get("role") == "assistant" else "user"
-            contents.append({"role": role, "parts": [{"text": str(message.get("content", ""))}]})
+            parts = [{"text": str(message.get("content", ""))}]
+            if message.get("image"):
+                media_type, encoded = _image_data_url(str(message["image"]))
+                parts.append({"inline_data": {"mime_type": media_type, "data": encoded}})
+            contents.append({"role": role, "parts": parts})
         body = {"contents": contents}
         if system:
             body["system_instruction"] = {"parts": [{"text": system}]}

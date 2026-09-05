@@ -22,12 +22,23 @@ class ModelProfile:
     api_key: str
     enabled: bool = True
     role: str = "worker"
+    capabilities: list[str] | None = None
+    tasks: list[str] | None = None
 
     def validate(self) -> "ModelProfile":
         self.id = self.id.strip()
         self.name = self.name.strip() or self.id
         ApiSettings(self.protocol, self.base_url, self.api_key, self.id).validate()
         self.role = self.role if self.role in {"primary", "worker", "judge"} else "worker"
+        allowed_capabilities = {"text", "vision", "audio"}
+        raw_capabilities = self.capabilities if isinstance(self.capabilities, list) else ["text"]
+        self.capabilities = list(dict.fromkeys(str(value) for value in raw_capabilities if str(value) in allowed_capabilities)) or ["text"]
+        allowed_tasks = {"chat", "vision", "scene"}
+        defaults = ["chat", "scene"] + (["vision"] if "vision" in self.capabilities else [])
+        raw_tasks = self.tasks if isinstance(self.tasks, list) else defaults
+        self.tasks = list(dict.fromkeys(str(value) for value in raw_tasks if str(value) in allowed_tasks)) or ["chat"]
+        if "vision" in self.tasks and "vision" not in self.capabilities:
+            self.tasks.remove("vision")
         return self
 
     def public(self) -> dict[str, Any]:
@@ -38,6 +49,8 @@ class ModelProfile:
             "base_url": self.base_url,
             "enabled": self.enabled,
             "role": self.role,
+            "capabilities": self.capabilities,
+            "tasks": self.tasks,
         }
 
 
@@ -96,6 +109,8 @@ class ModelCatalog:
                 api_key=key,
                 enabled=bool(item.get("enabled", True)),
                 role=str(item.get("role", "worker")),
+                capabilities=item.get("capabilities"),
+                tasks=item.get("tasks"),
             ).validate()
             if any(p.id == profile.id for p in profiles):
                 raise ValueError(f"模型 ID 重复：{profile.id}")
@@ -150,11 +165,27 @@ async def discover_models(protocol: str, base_url: str, api_key: str) -> dict[st
         return {"connected": False, "protocol": protocol, "base_url": base_url, "models": [], "error": str(exc)}
     rows = data.get("models", []) if protocol == "gemini" else data.get("data", [])
     models = []
-    for row in rows if isinstance(rows, list) else []:
+    for item in rows if isinstance(rows, list) else []:
+        row = item if isinstance(item, dict) else {}
         model_id = str(row.get("name", "") if protocol == "gemini" else row.get("id", "")).replace("models/", "", 1)
         methods = row.get("supportedGenerationMethods", [])
-        if model_id and (protocol != "gemini" or not methods or "generateContent" in methods):
-            models.append({"id": model_id, "name": str(row.get("displayName") or row.get("id") or model_id), "owned_by": row.get("owned_by")})
+        if not model_id or (protocol == "gemini" and methods and "generateContent" not in methods):
+            continue
+        architecture = row.get("architecture") if isinstance(row.get("architecture"), dict) else {}
+        raw_modalities = row.get("input_modalities") or row.get("modalities") or row.get("supported_modalities") or architecture.get("input_modalities")
+        labels = {str(value).lower() for value in raw_modalities} if isinstance(raw_modalities, list) else set()
+        capabilities = ["text"]
+        if labels & {"image", "vision", "video"}:
+            capabilities.append("vision")
+        if labels & {"audio", "sound"}:
+            capabilities.append("audio")
+        models.append({
+            "id": model_id,
+            "name": str(row.get("displayName") or row.get("id") or model_id),
+            "owned_by": row.get("owned_by"),
+            "capabilities": capabilities,
+            "tasks": ["chat", "scene"] + (["vision"] if "vision" in capabilities else []),
+        })
     return {"connected": True, "protocol": protocol, "base_url": base_url, "models": models}
 
 

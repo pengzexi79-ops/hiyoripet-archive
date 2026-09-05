@@ -73,10 +73,10 @@ class ServiceContext:
         if provided.strip():
             return provided.strip()
         normalized = base_url.strip().rstrip("/")
-        if self.user_api and self.user_api.protocol == protocol and self.user_api.base_url.rstrip("/") == normalized and (not model or self.user_api.model == model):
+        if self.user_api and self.user_api.protocol == protocol and self.user_api.base_url.rstrip("/") == normalized:
             return self.user_api.api_key
         for profile in self.catalog.runtime_profiles():
-            if profile.protocol == protocol and profile.base_url.rstrip("/") == normalized and (not model or profile.id == model):
+            if profile.protocol == protocol and profile.base_url.rstrip("/") == normalized and profile.api_key:
                 return profile.api_key
         return ""
 

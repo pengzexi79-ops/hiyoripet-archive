@@ -214,3 +214,16 @@
 - ✅ 门禁：TypeScript、Vite、Python `compileall`、GNU `cargo check`、Tauri GNU Release NSIS 全部通过；仅保留已知非致命 MinGW `.rsrc merge failure: multiple non-default manifests` 警告。
 - ✅ 最新交付物已覆盖：`D:/codex/pet/release/HiyoriPet/HiyoriPet.exe`、便携 ZIP、NSIS 安装包；桌面快捷方式仍指向 Release 可执行文件并使用日和图标。
 - SHA-256（2026-09-05 最终构建）：`HiyoriPet.exe BB463C9BF0BF1D680629561AF8394CAD2B6DC0E3BACD1C4CA0EA4F8E0C4CD301`；`pet-backend.exe 7E32C9CF6E9EF204CF659099B67C5B6763848CCD48CE5B85AC4513B74F388051`；`portable.zip EF1E733C5C66CE5F0D906B33F201F5150781707588377B51BC859D4D34D367BB`；`setup.exe 4874EF23DD6413CFBADE72B8CECBBBF785154634A1266FF87CE6B94268AA1B6F`。
+
+## 气泡遮挡修复与最新 Release 验收
+- ✅ 针对用户截图中的“气泡直接盖住日和头部”问题修复根因：气泡展开原生窗口后，PIXI 会重新把模型居中到扩展后的窗口；现在气泡窗口只负责增加侧边空间，日和始终固定在原始 360×600 视觉区域，气泡定位在日和头部侧上方并保持合理间距。
+- ✅ 最新 Release 实测气泡显示在日和右侧：气泡矩形约为 `x=364.8,y=85.2,w=236,h=142`，日和完整可见；关闭后约 3 秒缓慢淡出并恢复 `360×600`。
+- ✅ 快速打开/关闭气泡 15 轮：窗口尺寸只在 `360×600` 与 `624×600` 间切换，不会持续扩大；最终恢复 `360×600`，气泡消失，人物仍可见。
+- ✅ 最新 Release 连续点击人物 50 次：窗口保持可见，`document.visibilityState=visible`，Canvas 保持 `360×600`，未生成第二个桌宠进程。
+- ✅ 隐藏后再次启动：仍保持单个 `HiyoriPet.exe`，8000 端口只有一个监听，桌宠恢复可见并重新渲染；托盘/单实例唤醒路径均保留。
+- ✅ 命中区域复核：透明区域可穿透，日和不透明区域命中；不存在覆盖整窗的隐形矩形拦截。
+- ✅ 门禁与实际发布：TypeScript、Vite、Python compileall、GNU cargo check、Tauri NSIS Release 均通过；Release 不依赖 Vite 1420 开发服务器。
+- 最新交付物 SHA-256：
+  - `release/HiyoriPet/HiyoriPet.exe`：`E362F086A00D99086323C8423EC487939AF40C5BE5388921915AFCAA3099E66C`
+  - `release/HiyoriPet_0.1.3_x64-setup.exe`：`15DD3E514381B1C2096945FE21A1035D1EBD34DBAE73AF2D2039E9653D8138D8`
+  - `release/HiyoriPet_0.1.3_portable.zip`：`C2C07BFA38BD532F3634473B52E356A4C7BEC87841DFD4542B09F2B9A512BDC0`

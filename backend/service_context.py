@@ -33,13 +33,15 @@ class ServiceContext:
             raise RuntimeError("配置缺失：default_llm 必须对应已定义的 configs")
         self.llm = build_llm(self.config.default_llm, cfg)
 
-    def _active_profiles(self) -> list[ModelProfile]:
+    def _active_profiles(self, task: str = "chat") -> list[ModelProfile]:
         collaboration = self.catalog.collaboration()
         if not collaboration.get("enabled"):
             return []
         profiles = {profile.id: profile for profile in self.catalog.runtime_profiles() if profile.enabled}
         selected = collaboration.get("model_ids") or list(profiles)
-        return [profiles[item] for item in selected if item in profiles]
+        active = [profiles[item] for item in selected if item in profiles]
+        routed = [profile for profile in active if task in (profile.tasks or ["chat"])]
+        return routed or active
 
     def api_status(self) -> dict:
         profiles = self._active_profiles()
@@ -112,8 +114,8 @@ class ServiceContext:
             raise RuntimeError(f"模型 {profile.id} 返回空内容")
         return answer
 
-    async def chat_iter(self, messages: list[dict]):
-        profiles = self._active_profiles()
+    async def chat_iter(self, messages: list[dict], task: str = "chat"):
+        profiles = self._active_profiles(task)
         if not profiles:
             async for piece in self.llm.chat_iter(messages):
                 yield piece

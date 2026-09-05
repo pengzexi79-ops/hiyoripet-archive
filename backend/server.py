@@ -38,6 +38,8 @@ class ModelInput(BaseModel):
     api_key: str = ""
     enabled: bool = True
     role: str = "worker"
+    capabilities: list[str] = ["text"]
+    tasks: list[str] = []
 
 
 class ModelsInput(BaseModel):
@@ -162,7 +164,7 @@ async def ws_endpoint(ws: WebSocket):
             if mtype == "ping":
                 await ws.send_json({"type": "pong"})
             elif mtype == "text-input":
-                await _handle_text(ws, sc, (msg.get("text") or "").strip())
+                await _handle_text(ws, sc, (msg.get("text") or "").strip(), msg.get("image"), msg.get("task"))
             elif mtype == "audio-end":
                 await ws.send_json({"type": "error", "message": "本地 ASR 暂未启用，请先直接输入文字。"})
             elif mtype != "interrupt":
@@ -171,11 +173,22 @@ async def ws_endpoint(ws: WebSocket):
         pass
 
 
-async def _handle_text(ws: WebSocket, sc, text: str):
-    if not text:
+async def _handle_text(ws: WebSocket, sc, text: str, image=None, task=None):
+    if not text and not image:
         await ws.send_json({"type": "error", "message": "请输入想说的话"})
         return
-    sc.history.append({"role": "user", "content": text})
+    task = task if task in {"chat", "vision", "scene"} else "chat"
+    if image:
+        task = "vision"
+        if not str(image).startswith("data:"):
+            await ws.send_json({"type": "error", "message": "图片必须是 data URL"})
+            return
+    for item in sc.history:
+        item.pop("image", None)
+    user_message = {"role": "user", "content": text or "请看这张图片并简短回应。"}
+    if image:
+        user_message["image"] = str(image)
+    sc.history.append(user_message)
     status = sc.api_status()
     if not status["configured"]:
         await ws.send_json(_status_message(status))
@@ -186,7 +199,7 @@ async def _handle_text(ws: WebSocket, sc, text: str):
     messages = [{"role": "system", "content": _system_prompt()}] + sc.history[-20:]
     try:
         acc = ""
-        async for piece in sc.chat_iter(messages):
+        async for piece in sc.chat_iter(messages, task):
             acc += piece
             await ws.send_json({"type": "ai-response", "text": piece, "emotion": "normal"})
         if not acc:

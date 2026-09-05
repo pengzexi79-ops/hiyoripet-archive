@@ -19,6 +19,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![window::toggle_clickthrough])
         .setup(|app| {
             app.manage(backend::launch(app));
+            window::start_clickthrough_recovery(app.handle());
             tray::build_tray(app)?;
             Ok(())
         })

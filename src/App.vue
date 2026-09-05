@@ -18,7 +18,6 @@ const canvas = ref<HTMLCanvasElement | null>(null)
 const status = ref('初始化中…')
 const clickthrough = ref(false)
 const clickthroughBusy = ref(false)
-const rightClickTimer = ref<number | undefined>(undefined)
 const hasCore = ref(true)
 const meta = ref<ModelMeta | null>(null)
 const lastUserInteraction = ref(0)
@@ -55,7 +54,6 @@ let desktopPosition: { x: number; y: number } | null = null
 let desktopMoveBusy = false
 let nextWanderAt = 0
 let tapCount = 0
-let rightClickCount = 0
 let stopPetVisibilityListener: UnlistenFn | undefined
 let stopPetHiddenListener: UnlistenFn | undefined
 let press: { pointerId: number; clientX: number; clientY: number; x: number; y: number } | null = null
@@ -102,7 +100,7 @@ onMounted(async () => {
     })
     stopClickthroughListener = await listen<boolean>('clickthrough-changed', (event) => {
       clickthrough.value = event.payload
-      status.value = event.payload ? '穿透中：请用托盘关闭' : '可交互（可拖动）'
+      status.value = event.payload ? '穿透中：在日和区域再次右键可退出' : '可交互（可拖动）'
     })
     stopPetVisibilityListener = await listen('pet-opened', () => {
       status.value = '桌宠已打开'
@@ -146,7 +144,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('pet-api-action', onApiAction as EventListener)
   delete (window as Window & { petApi?: unknown }).petApi
   if (guideTimer) clearTimeout(guideTimer)
-  if (rightClickTimer.value) clearTimeout(rightClickTimer.value)
   if (reactionTimer) clearTimeout(reactionTimer)
   stopBehavior()
   stopIdle()
@@ -494,14 +491,6 @@ function onWheel(e: WheelEvent) {
 }
 
 function onContextMenu() {
-  rightClickCount += 1
-  if (rightClickTimer.value) clearTimeout(rightClickTimer.value)
-  rightClickTimer.value = window.setTimeout(() => { rightClickCount = 0 }, 360)
-  if (rightClickCount === 2) {
-    rightClickCount = 0
-    if (clickthrough.value) void toggle()
-    return
-  }
   if (!clickthrough.value) void toggle()
 }
 
@@ -513,7 +502,7 @@ async function toggle() {
   try {
     await invoke('toggle_clickthrough', { enabled: next })
     clickthrough.value = next
-    status.value = next ? '穿透中：请用托盘关闭（窗口暂不可点击）' : '可交互（可拖动）'
+    status.value = next ? '穿透中：在日和区域再次右键可退出' : '可交互（可拖动）'
     guideVisible.value = !next
     lastUserInteraction.value = Date.now()
   } catch (e) {

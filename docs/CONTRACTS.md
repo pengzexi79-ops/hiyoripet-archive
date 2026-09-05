@@ -144,3 +144,24 @@ Health:          GET http://127.0.0.1:8000/health
 - 正常退出时 Tauri 必须终止整个 sidecar 进程树；Tauri 崩溃或被强制结束时，sidecar 的父进程监视器必须自行退出。
 - `/health` 返回 `{ "status": "ok", "llm": "remote" | "local" }`。没有 `FOXTOKEN_KEY` 或远端调用失败时，文本消息仍返回 `ai-response`，使用本地陪伴回复，不把桌宠降级成不可用错误页。
 - 前端允许在 sidecar 解压启动期间短暂重连；发布包不得依赖 Vite `devUrl` 或端口 1420。
+
+## C6 单实例、隐藏与运行时 API 配置（2026-09-05）
+
+### Windows 单实例
+- 同一用户会话只允许一个 `HiyoriPet` 进程；再次启动不得创建第二只宠物。
+- 第二次启动要唤醒既有窗口、关闭穿透并触发 `pet-opened`，不得再启动第二个后端 sidecar。
+- 托盘必须同时提供“显示宠物”和“隐藏宠物”；聊天气泡内保留明确的“隐藏桌宠”入口。
+
+### API 配置
+本地后端提供：
+```text
+GET  /api/config  -> { configured, protocol, base_url, model, source }
+POST /api/config  <- { protocol, base_url, api_key, model }
+                   -> { configured, protocol, base_url, model, source }
+DELETE /api/config -> 清除用户配置并回到本地模式
+```
+- `protocol` 支持 `openai-compatible`、`anthropic-messages`、`gemini`；`base_url` 与 `model` 由用户填写，不绑定供应商名单，兼容对应协议的官方地址及中转地址。
+- API key 不回传前端、不进仓库；Windows 发布版使用当前用户 DPAPI 加密后写入 `%APPDATA%/HiyoriPet/api.json`。
+- 保存配置不自动发起计费测试；下一次真实对话才调用远端接口。
+- 未配置 API 时，WS 在本地回复前发送 `{ type: "api-status", configured: false, message }`；远端调用失败时发送同类型状态并回退本地回复。
+- 前端聊天气泡必须直接显示“当前未接入 API”及“添加 API”按钮；配置面板可保存、修改或清除配置。

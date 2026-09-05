@@ -148,3 +148,9 @@
 - SHA-256：`HiyoriPet.exe B9C4409AE58F0EBEACA2B207F7A6FE679A2E7FA04037725DEB5390F9ED8793C8`；`portable.zip 7087315761FBDEAE7027C3AAD55D5084DE4A904978AB920B476E15F008E94C01`；`setup.exe 6192A17A2AA61BBA5951EAC6A6D71331B23B3392EEF1D2526856F4BC43549D74`。
 - ⚠️ 穿透是 Tauri 原生窗口级能力：穿透后 WebView 不再接收右键，因此可靠恢复入口仍为托盘“点击穿透：关”；未虚假标注“双击右键关闭”为完成。
 - ⏳ 后续可选：真实 `FOXTOKEN_KEY` 远端模型调用、语音 ASR/TTS 完整链路；不影响当前本地文本桌宠开箱运行。
+
+## 2026-09-05 用户反馈修复（进行中）
+- 🐛 重复点击快捷方式会创建多只日和：改为 Windows 单实例，重复启动仅唤醒已有桌宠。
+- 🐛 隐藏入口不明显：托盘增加“隐藏宠物”，气泡文案改为“隐藏桌宠”。
+- 🐛 本地模式未明确告知 API 状态：聊天内显示未接入提示，并提供可视化 API 配置。
+- ⏳ 支持 OpenAI-compatible、Anthropic Messages、Gemini 官方/中转地址；密钥使用 Windows DPAPI 加密保存。

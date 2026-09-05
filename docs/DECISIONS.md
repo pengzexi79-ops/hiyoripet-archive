@@ -68,3 +68,9 @@
 - 后端：FastAPI 使用 PyInstaller `--onefile --noconsole` 构建为 `pet-backend.exe`，由 Tauri 资源目录启动；Tauri 正常退出负责杀进程树，后端同时监视 `PET_PARENT_PID` 覆盖崩溃退出场景。
 - 可用性：未配置 `FOXTOKEN_KEY` 时默认本地陪伴回复；配置密钥后再走 foxtoken 流式通道，密钥仍只来自环境变量。
 - 发布：同时产出 NSIS 安装包和包含 `HiyoriPet.exe + WebView2Loader.dll + backend/` 的便携目录；应用图标使用用户提供的日和图。
+
+## D12 单实例与通用 API 配置（2026-09-05）
+- Windows 桌宠使用 Tauri 2 官方 single-instance 插件；重复启动只唤醒已有窗口，并恢复可交互状态。
+- 隐藏不是退出：气泡与托盘都提供隐藏入口，托盘负责恢复；退出才终止 Tauri 与 sidecar。
+- 运行时 API 不再绑定 `FOXTOKEN_KEY`：UI 可配置 OpenAI-compatible、Anthropic Messages、Gemini 三类协议的任意官方/中转基础地址与模型。
+- 用户 API key 仅保存为 Windows DPAPI 密文；不自动测试以避免未经确认的计费调用，真实对话失败时明确提示并回退本地模式。

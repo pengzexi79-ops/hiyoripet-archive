@@ -6,7 +6,7 @@ import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi'
 import { Live2d, type ModelMeta } from './core/live2d'
 import { PetSocket, type WsStatus } from './core/ws'
 import { Chat } from './core/chat'
-import { clearApiConfig, fetchApiStatus, saveApiConfig, type ApiProtocol, type ApiStatus } from './core/api'
+import { clearApiConfig, discoverApiModels, fetchApiStatus, fetchCollaboration, fetchModelCatalog, saveApiConfig, saveCollaboration, saveModelCatalog, testApiConnection, type ApiProtocol, type ApiStatus, type CollaborationSettings, type DiscoveredModel, type ModelProfile } from './core/api'
 
 // 模型放置于 public/models/Hiyori/（Vite 构建时拷进 dist/models/，由 Tauri 资源一并打包）。
 const MODEL_URL = '/models/Hiyori/Hiyori.model3.json'
@@ -45,6 +45,13 @@ const API_PRESETS: ApiPreset[] = [
 ]
 const apiPreset = ref('custom')
 const apiForm = ref({ protocol: 'openai-compatible' as ApiProtocol, base_url: '', api_key: '', model: '' })
+type UiModelProfile = ModelProfile & { api_key?: string }
+const modelCatalog = ref<UiModelProfile[]>([])
+const collaboration = ref<CollaborationSettings>({ enabled: false, strategy: 'fallback', model_ids: [] })
+const apiDiscovering = ref(false)
+const apiTesting = ref(false)
+const catalogSaving = ref(false)
+const providerMessage = ref('')
 // 调试 HUD 默认隐藏：桌宠画面上不显示任何 UI（此前底部白色面板会挡住模型下半身且碍眼）。
 // ── 桌宠交互：仅保留 Hiyori，缩放由滚轮控制 ──
 const guideVisible = ref(true)
@@ -290,6 +297,70 @@ function applyApiStatus(next: ApiStatus) {
   }
 }
 
+async function loadApiPanelData() {
+  try {
+    const [catalog, settings] = await Promise.all([fetchModelCatalog(), fetchCollaboration()])
+    modelCatalog.value = catalog.models
+    collaboration.value = settings
+  } catch {
+    // 后端启动期间允许稍后重试，不阻塞 API 面板打开。
+  }
+}
+
+async function discoverModels() {
+  apiDiscovering.value = true
+  apiError.value = ''
+  providerMessage.value = ''
+  try {
+    const result = await discoverApiModels({ protocol: apiForm.value.protocol, base_url: apiForm.value.base_url, api_key: apiForm.value.api_key })
+    if (!result.connected) throw new Error(result.error || '接口未连接成功')
+    const existing = new Set(modelCatalog.value.map((model) => `${model.protocol}|${model.base_url}|${model.id}`))
+    for (const model of result.models as DiscoveredModel[]) {
+      const key = `${apiForm.value.protocol}|${apiForm.value.base_url.replace(/\/$/, '')}|${model.id}`
+      if (!existing.has(key)) {
+        modelCatalog.value.push({ id: model.id, name: model.name, protocol: apiForm.value.protocol, base_url: apiForm.value.base_url.replace(/\/$/, ''), enabled: false, role: 'worker', api_key: apiForm.value.api_key })
+      }
+    }
+    if (!apiForm.value.model && result.models[0]) apiForm.value.model = result.models[0].id
+    providerMessage.value = `连接成功，识别到 ${result.models.length} 个可用模型；勾选后保存即可启用。`
+  } catch (e) {
+    apiError.value = (e as Error)?.message ?? String(e)
+  } finally {
+    apiDiscovering.value = false
+  }
+}
+
+async function testConnection() {
+  apiTesting.value = true
+  apiError.value = ''
+  providerMessage.value = ''
+  try {
+    const result = await testApiConnection({ protocol: apiForm.value.protocol, base_url: apiForm.value.base_url, api_key: apiForm.value.api_key, model: apiForm.value.model })
+    if (!result.connected) throw new Error(result.error || '接口测试失败')
+    providerMessage.value = `连接测试成功 · ${result.model} · ${result.latency_ms ?? 0} ms`
+  } catch (e) {
+    apiError.value = (e as Error)?.message ?? String(e)
+  } finally {
+    apiTesting.value = false
+  }
+}
+
+async function saveModelSettings() {
+  catalogSaving.value = true
+  apiError.value = ''
+  try {
+    const saved = await saveModelCatalog(modelCatalog.value)
+    const selected = saved.models.filter((model) => model.enabled).map((model) => model.id)
+    const next = await saveCollaboration({ ...collaboration.value, model_ids: selected })
+    modelCatalog.value = saved.models
+    collaboration.value = next
+    providerMessage.value = next.enabled ? `已启用 ${selected.length} 个模型协作。` : '多模型协作已关闭。'
+  } catch (e) {
+    apiError.value = (e as Error)?.message ?? String(e)
+  } finally {
+    catalogSaving.value = false
+  }
+}
 function positionApiPanel() {
   if (!apiPanelVisible.value) return
   const b = pet?.getBounds() ?? { x: window.innerWidth / 2, y: window.innerHeight / 2, width: 0, height: 0 }
@@ -825,7 +896,7 @@ body {
   pointer-events: none;
 }
 .popup-scrim { position: absolute; inset: 0; z-index: 70; background: transparent; }
-.api-panel { position: absolute; z-index: 80; width: min(calc(286px * var(--ui-scale)), calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow: auto; box-sizing: border-box; padding: calc(14px * var(--ui-scale)); border: 1px solid rgba(91, 117, 145, 0.2); border-radius: calc(16px * var(--ui-scale)); background: rgba(255, 255, 255, 0.98); color: #2f435a; box-shadow: 0 10px 30px rgba(31, 55, 78, 0.24); }
+.api-panel { max-height: calc(100vh - 16px); overflow-y: auto; position: absolute; z-index: 80; width: min(calc(286px * var(--ui-scale)), calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow: auto; box-sizing: border-box; padding: calc(14px * var(--ui-scale)); border: 1px solid rgba(91, 117, 145, 0.2); border-radius: calc(16px * var(--ui-scale)); background: rgba(255, 255, 255, 0.98); color: #2f435a; box-shadow: 0 10px 30px rgba(31, 55, 78, 0.24); }
 .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: calc(10px * var(--ui-scale)); }
 .panel-subtitle { margin-top: 2px; color: #8a98a6; font-size: calc(10px * var(--ui-scale)); }
 .panel-status { margin: 0 0 calc(8px * var(--ui-scale)); padding: calc(7px * var(--ui-scale)) calc(8px * var(--ui-scale)); border-radius: calc(9px * var(--ui-scale)); background: #fff8e8; color: #9a6d24; font-size: calc(11px * var(--ui-scale)); line-height: 1.35; }
@@ -838,7 +909,17 @@ body {
 .primary-action { background: #6f9bc5; color: white; }
 .secondary-action { background: #eef2f6; color: #637489; }
 .api-actions button:disabled { cursor: wait; opacity: 0.55; }
-.api-panel small { display: block; margin-top: calc(9px * var(--ui-scale)); color: #8a98a6; font-size: calc(10px * var(--ui-scale)); line-height: 1.4; overflow-wrap: anywhere; }
+.api-hint { margin-top: 4px; color: #9a6d24; font-size: calc(10px * var(--ui-scale)); line-height: 1.35; }
+.provider-message { margin-top: 7px; padding: 6px 8px; border-radius: 8px; background: #f0faf4; color: #3f8058; font-size: calc(10px * var(--ui-scale)); line-height: 1.35; }
+.model-catalog { margin-top: 10px; padding-top: 8px; border-top: 1px solid #edf1f4; }
+.catalog-title { margin-bottom: 6px; color: #637489; font-size: calc(11px * var(--ui-scale)); }
+.model-row { display: flex; align-items: center; gap: 6px; margin: 5px 0; font-size: calc(10px * var(--ui-scale)); }
+.model-info { min-width: 0; flex: 1; color: #40566d; overflow: hidden; }
+.model-info strong, .model-info small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-info small { color: #8a98a6; font-size: calc(9px * var(--ui-scale)); }
+.model-row select, .strategy-select { width: auto; margin: 0; padding: 4px; font-size: calc(10px * var(--ui-scale)); }
+.collab-toggle { display: flex !important; align-items: center; gap: 5px; margin: 8px 0 4px !important; }
+.catalog-save { width: 100%; margin-top: 7px; }.api-panel small { display: block; margin-top: calc(9px * var(--ui-scale)); color: #8a98a6; font-size: calc(10px * var(--ui-scale)); line-height: 1.4; overflow-wrap: anywhere; }
 .chat-bubble::after {
   content: '';
   position: absolute;
@@ -927,3 +1008,4 @@ body {
   pointer-events: none;
 }
 </style>
+

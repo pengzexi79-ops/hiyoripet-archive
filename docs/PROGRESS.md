@@ -227,3 +227,16 @@
   - `release/HiyoriPet/HiyoriPet.exe`：`E362F086A00D99086323C8423EC487939AF40C5BE5388921915AFCAA3099E66C`
   - `release/HiyoriPet_0.1.3_x64-setup.exe`：`15DD3E514381B1C2096945FE21A1035D1EBD34DBAE73AF2D2039E9653D8138D8`
   - `release/HiyoriPet_0.1.3_portable.zip`：`C2C07BFA38BD532F3634473B52E356A4C7BEC87841DFD4542B09F2B9A512BDC0`
+
+## 识别一键启动 / 取消 / 导入 / 多模态 / 场景路由（2026-09-06）
+- ✅ 契约 C7 与决策 D14 已登记：识别结果带 `capabilities`/`tasks`；模型目录支持能力与任务字段；WS `text-input` 支持 `image` data URL 与 `task`（chat/vision/scene）。
+- ✅ 后端：OpenAI-compatible / Anthropic / Gemini 三类适配器均支持图片内容转换（image_url / base64 source / inline_data）；协作按任务路由，仅启用且声明该任务的模型参与，无匹配时回退启用目录。
+- ✅ 前端：识别结果提供“一键启动全部”“取消本次识别”；API 面板提供“导入模型 JSON”；聊天气泡提供图片附件（🖼）与待发送预览；自主场景对话以 `scene` 任务发送。
+- ✅ 真实 Release 冒烟（本地 mock OpenAI 服务，无外网无计费）：识别返回 `mock-text`(text) 与 `mock-vision`(text+vision)；一键启动后协作 `enabled=true` 且 `model_ids=[mock-text,mock-vision]`；取消后识别列表清空；导入无密钥 `mock-judge` 后保存成功（同端点共享已保存密钥）；气泡发图后路由到 `mock-vision` 且请求含 `image_url`，回复显示在气泡。
+- ✅ 门禁：TypeScript `tsc --noEmit`、Vite production build、Python `compileall`、GNU `cargo check`、Tauri GNU Release NSIS 全部通过；仅保留已知非致命 MinGW `.rsrc merge failure` 警告。
+- ✅ 测试后已清空 mock 模型目录与协作配置，停止桌宠、sidecar 与 mock 进程，8000/8123 端口释放。
+- 最新交付物 SHA-256：
+  - `release/HiyoriPet/HiyoriPet.exe`：`1178D699F9060638AB6249D34F1B76661B663F0316BCB1A1E2BD6B7161D0F226`
+  - `release/HiyoriPet/backend/pet-backend.exe`：`C372B18BB6E8C143A6598EF12D87F995E921FD4366EE95BDC1F6E31CEDE89A9C`
+  - `release/HiyoriPet_0.1.3_x64-setup.exe`：`B160D2F080B4FA39EBF0D5E897F0E4ED5722C15BDB2012BC180C9E92BEEED7DA`
+  - `release/HiyoriPet_0.1.3_portable.zip`：`C00B8C872DC88077A92410558CB1978994769A4ADAD5B26C5DFB9FDD6178D80C`

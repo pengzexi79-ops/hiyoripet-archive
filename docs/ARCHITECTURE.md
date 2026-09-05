@@ -10,7 +10,7 @@ L5 交互层   useDevice / useDrag / useTray → 行为仲裁 arbiter
 L4 状态层   Pinia：model / emotion / config
 L3 渲染层   Live2d 单例（PIXI Application + Live2DModel + 参数驱动）
 L2 通信层   WebSocket Client（重连 / 心跳 / 序列化）
-L1 平台层   Tauri Core：窗口 / 穿透 / 全局输入 / 文件 / 托盘 / 自启
+L1 平台层   Tauri Core：窗口 / 全局输入 / 文件 / 托盘 / 自启
             ↕ WebSocket（前后端唯一耦合点）
 后端       FastAPI + ServiceContext → ASR / Agent / LLM / TTS / 记忆（SQLite）
 ```
@@ -88,4 +88,4 @@ HiyoriPet.exe
   -> 托盘退出：Tauri taskkill 进程树；异常退出：Python 监视父 PID 后自退
 ```
 
-主动行为在桌面壳中以窗口为移动单位：空闲 12 秒后在当前显示器工作区内缓慢游走，点击、拖动、聊天、隐藏或穿透状态会暂停；浏览器预览仅保留画布内移动作为降级。
+主动行为在桌面壳中以窗口为移动单位：空闲 12 秒后在当前显示器工作区内缓慢游走，点击、拖动、聊天或隐藏状态会暂停；浏览器预览仅保留画布内移动作为降级。

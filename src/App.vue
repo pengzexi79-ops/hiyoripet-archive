@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
 import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi'
@@ -16,8 +15,6 @@ const WS_URL = (import.meta as unknown as { env?: { VITE_WS_URL?: string } }).en
 
 const canvas = ref<HTMLCanvasElement | null>(null)
 const status = ref('初始化中…')
-const clickthrough = ref(false)
-const clickthroughBusy = ref(false)
 const hasCore = ref(true)
 const meta = ref<ModelMeta | null>(null)
 const lastUserInteraction = ref(0)
@@ -70,7 +67,6 @@ let tapCount = 0
 let stopPetVisibilityListener: UnlistenFn | undefined
 let stopPetHiddenListener: UnlistenFn | undefined
 let press: { pointerId: number; clientX: number; clientY: number; x: number; y: number } | null = null
-let stopClickthroughListener: UnlistenFn | undefined
 let stopWindowMovedListener: UnlistenFn | undefined
 
 async function loadModel() {
@@ -111,10 +107,6 @@ onMounted(async () => {
     stopWindowMovedListener = await appWindow.onMoved(({ payload }) => {
       desktopPosition = { x: payload.x, y: payload.y }
     })
-    stopClickthroughListener = await listen<boolean>('clickthrough-changed', (event) => {
-      clickthrough.value = event.payload
-      status.value = event.payload ? '穿透中：在日和区域再次右键可退出' : '可交互（可拖动）'
-    })
     stopPetVisibilityListener = await listen('pet-opened', () => {
       status.value = '桌宠已打开'
       lastUserInteraction.value = Date.now()
@@ -145,8 +137,6 @@ function onKey(e: KeyboardEvent) {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey)
-  stopClickthroughListener?.()
-  stopClickthroughListener = undefined
   stopPetVisibilityListener?.()
   stopPetVisibilityListener = undefined
   stopPetHiddenListener?.()
@@ -267,7 +257,7 @@ function sendText() {
 function startIdle() {
   stopIdle()
   idleTimer = window.setInterval(() => {
-    if (clickthrough.value || !pet) return
+    if (!pet) return
     const idle = Date.now() - lastUserInteraction.value > 8000
     if (idle) {
       pet.playMotionRandom('Idle').catch(() => {})
@@ -332,7 +322,7 @@ async function stepDesktopWander() {
 function startBehavior() {
   stopBehavior()
   behaviorTimer = window.setInterval(() => {
-    if (!pet || clickthrough.value || chatBubbleVisible.value || press) return
+    if (!pet || chatBubbleVisible.value || press) return
     if (Date.now() - lastUserInteraction.value < 12000) return
     if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
       void stepDesktopWander()
@@ -476,7 +466,7 @@ function interactAt(x: number, y: number) {
 }
 
 function onPointerDown(e: PointerEvent) {
-  if (e.button !== 0 || clickthroughBusy.value || clickthrough.value || !pet) return
+  if (e.button !== 0 || !pet) return
   closeBubble()
   desktopWanderTarget = null
   guideVisible.value = false
@@ -485,9 +475,9 @@ function onPointerDown(e: PointerEvent) {
   pet.focus(e.offsetX, e.offsetY)
 }
 
-// 移动超过阈值才拖窗；短按到 pointerup 才互动，避免 startDragging 吞掉单击/右键。
+// 移动超过阈值才拖窗；短按到 pointerup 才互动，避免 startDragging 吞掉单击。
 function onPointerMove(e: PointerEvent) {
-  if (clickthroughBusy.value || clickthrough.value || !pet) return
+  if (!pet) return
   pet.focus(e.offsetX, e.offsetY)
   if (!press || press.pointerId !== e.pointerId) return
   if (Math.hypot(e.clientX - press.clientX, e.clientY - press.clientY) < 7) return
@@ -513,28 +503,6 @@ function onWheel(e: WheelEvent) {
   lastUserInteraction.value = Date.now()
 }
 
-function onContextMenu() {
-  if (!clickthrough.value) void toggle()
-}
-
-async function toggle() {
-  if (clickthroughBusy.value) return
-  const next = !clickthrough.value
-  clickthroughBusy.value = true
-  closeBubble()
-  try {
-    await invoke('toggle_clickthrough', { enabled: next })
-    clickthrough.value = next
-    status.value = next ? '穿透中：在日和区域再次右键可退出' : '可交互（可拖动）'
-    guideVisible.value = !next
-    lastUserInteraction.value = Date.now()
-  } catch (e) {
-    status.value = `穿透切换失败：${(e as Error)?.message ?? e}`
-  } finally {
-    clickthroughBusy.value = false
-  }
-}
-
 </script>
 
 <template>
@@ -546,7 +514,6 @@ async function toggle() {
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
       @pointercancel="onPointerCancel"
-      @contextmenu.prevent.stop="onContextMenu"
       @wheel.prevent.stop="onWheel"
     ></canvas>
 
@@ -612,7 +579,7 @@ async function toggle() {
       <button class="dismiss-pet" type="button" @click="closePet">隐藏桌宠</button>
       <div v-if="wsError" class="bubble-error">⚠ {{ wsError }}</div>
     </div>
-    <div v-if="guideVisible" class="guide">点击宠物互动 · 按住拖动 · 滚轮缩放 · 右键开启穿透</div>
+    <div v-if="guideVisible" class="guide">点击宠物互动 · 按住拖动 · 滚轮缩放</div>
 
   </div>
 </template>

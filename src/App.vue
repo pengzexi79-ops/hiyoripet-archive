@@ -2,6 +2,7 @@
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
+import { invoke } from '@tauri-apps/api/core'
 import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi'
 import { Live2d, type ModelMeta, type PetPose } from './core/live2d'
 import { PetSocket, type WsStatus } from './core/ws'
@@ -47,6 +48,7 @@ const apiPreset = ref('custom')
 const apiForm = ref({ protocol: 'openai-compatible' as ApiProtocol, base_url: '', api_key: '', model: '' })
 type UiModelProfile = ModelProfile & { api_key?: string }
 const modelCatalog = ref<UiModelProfile[]>([])
+const discoveredModels = ref<UiModelProfile[]>([])
 const collaboration = ref<CollaborationSettings>({ enabled: false, strategy: 'fallback', model_ids: [] })
 const apiDiscovering = ref(false)
 const apiTesting = ref(false)
@@ -93,6 +95,42 @@ let bubbleFadeTimer: number | undefined
 let zoomFrame: number | undefined
 let pendingZoom: number | null = null
 let zoomBusy = false
+let nativeRegionRequest = 0
+
+function isTauriWindow() {
+  return !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+}
+
+async function syncNativeHitRegion() {
+  if (!isTauriWindow() || !pet) return
+  const request = ++nativeRegionRequest
+  // Dialogs and chat inputs intentionally restore the full client region so their
+  // controls remain clickable; the normal pet-only state uses alpha strips.
+  if (apiPanelVisible.value || chatBubbleVisible.value) {
+    await invoke('clear_hit_region').catch(() => {})
+    return
+  }
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+  if (request !== nativeRegionRequest || !pet) return
+  const dpr = Math.max(1, window.devicePixelRatio || 1)
+  const regions = pet.getOpaqueRegions()
+  if (!regions.length) {
+    await invoke('clear_hit_region').catch(() => {})
+    return
+  }
+  await invoke('set_hit_region', {
+    rects: regions.map((rect) => ({
+      x: Math.floor(rect.x * dpr),
+      y: Math.floor(rect.y * dpr),
+      width: Math.max(1, Math.ceil(rect.width * dpr)),
+      height: Math.max(1, Math.ceil(rect.height * dpr)),
+    })),
+  }).catch(() => {})
+}
+
+function onNativeRegionResize() {
+  void syncNativeHitRegion()
+}
 
 async function loadModel() {
   if (!pet) return
@@ -103,6 +141,8 @@ async function loadModel() {
     lastUserInteraction.value = Date.now()
     nextWanderAt = Date.now() + 12000
     status.value = `已加载：${Object.keys(m.motions).length} 组动作 / ${m.expressions.length} 个表情`
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    void syncNativeHitRegion()
   } catch (e) {
     status.value = `模型加载失败：${(e as Error)?.message ?? e}（请确认 public/models/Hiyori 已放入资产）`
   }
@@ -153,6 +193,7 @@ onMounted(async () => {
   // M3：建立后端对话通道
   window.addEventListener('resize', positionBubble)
   window.addEventListener('resize', positionApiPanel)
+  window.addEventListener('resize', onNativeRegionResize)
   window.addEventListener('pet-api-action', onApiAction as EventListener)
   ;(window as Window & { petApi?: { dispatch: (action: PetApiAction) => void } }).petApi = {
     dispatch: (action) => window.dispatchEvent(new CustomEvent('pet-api-action', { detail: action })),
@@ -196,6 +237,7 @@ onBeforeUnmount(() => {
   stopWindowMovedListener = undefined
   window.removeEventListener('resize', positionBubble)
   window.removeEventListener('resize', positionApiPanel)
+  window.removeEventListener('resize', onNativeRegionResize)
   if (autonomyTimer) clearTimeout(autonomyTimer)
   autonomyTimer = undefined
   cancelBubbleDismiss()
@@ -319,11 +361,23 @@ async function discoverModels() {
   try {
     const result = await discoverApiModels({ protocol: apiForm.value.protocol, base_url: apiForm.value.base_url, api_key: apiForm.value.api_key })
     if (!result.connected) throw new Error(result.error || '接口未连接成功')
-    const existing = new Set(modelCatalog.value.map((model) => `${model.protocol}|${model.base_url}|${model.id}`))
-    for (const model of result.models as DiscoveredModel[]) {
-      const key = `${apiForm.value.protocol}|${apiForm.value.base_url.replace(/\/$/, '')}|${model.id}`
-      if (!existing.has(key)) {
-        modelCatalog.value.push({ id: model.id, name: model.name, protocol: apiForm.value.protocol, base_url: apiForm.value.base_url.replace(/\/$/, ''), enabled: false, role: 'worker', api_key: apiForm.value.api_key })
+    const normalizedBase = apiForm.value.base_url.replace(/\/$/, '')
+    discoveredModels.value = (result.models as DiscoveredModel[]).map((model) => ({
+      id: model.id,
+      name: model.name?.trim() || model.id,
+      protocol: apiForm.value.protocol,
+      base_url: normalizedBase,
+      enabled: false,
+      role: 'worker',
+      api_key: apiForm.value.api_key,
+    }))
+    for (const discovered of discoveredModels.value) {
+      const existing = modelCatalog.value.find((model) => model.protocol === discovered.protocol && model.base_url === discovered.base_url && model.id === discovered.id)
+      if (existing) {
+        existing.name = discovered.name
+        if (discovered.api_key) existing.api_key = discovered.api_key
+      } else {
+        modelCatalog.value.push(discovered)
       }
     }
     if (!apiForm.value.model && result.models[0]) apiForm.value.model = result.models[0].id
@@ -387,6 +441,7 @@ function openApiPanel() {
   stopBehavior()
   stopAutonomy()
   apiPanelVisible.value = true
+  void syncNativeHitRegion()
   lastUserInteraction.value = Date.now()
   void loadApiPanelData()
   positionApiPanel()
@@ -397,6 +452,7 @@ function closeApiPanel() {
   const wasVisible = apiPanelVisible.value
   apiPanelVisible.value = false
   apiError.value = ''
+  void syncNativeHitRegion()
   if (wasVisible && pet) {
     startIdle()
     startBehavior()
@@ -665,6 +721,7 @@ function openBubble() {
   cancelBubbleDismiss()
   bubbleFading.value = false
   chatBubbleVisible.value = true
+  void syncNativeHitRegion()
   positionBubble()
   requestAnimationFrame(positionBubble)
   armBubbleDismiss()
@@ -673,6 +730,7 @@ function closeBubble() {
   cancelBubbleDismiss()
   bubbleFading.value = false
   chatBubbleVisible.value = false
+  void syncNativeHitRegion()
 }
 function cancelBubbleDismiss() {
   if (bubbleDismissTimer) clearTimeout(bubbleDismissTimer)
@@ -714,6 +772,7 @@ async function applyZoom(nextZoom: number) {
     pet.syncRendererSize()
     pet.setZoom(zoomLevel.value)
     if (meta.value) pet.resizeModel(meta.value)
+    void syncNativeHitRegion()
     if (beforePosition && beforeSize) {
       const afterSize = await appWindow.outerSize().catch(() => null)
       if (afterSize) {
@@ -891,11 +950,17 @@ function onWheel(e: WheelEvent) {
         <button type="button" class="secondary-action" :disabled="apiTesting || !apiForm.model" @click="testConnection">{{ apiTesting ? '测试中…' : '测试连接' }}</button>
       </div>
       <div v-if="providerMessage" class="provider-message">{{ providerMessage }}</div>
+      <div v-if="discoveredModels.length" class="discovery-result">
+        <div class="catalog-title">本次识别结果 · {{ discoveredModels.length }} 个模型</div>
+        <div v-for="model in discoveredModels" :key="`found-${model.protocol}-${model.base_url}-${model.id}`" class="discovery-row">
+          <strong>{{ model.name }}</strong><span>模型 ID：{{ model.id }}</span>
+        </div>
+      </div>
       <div v-if="modelCatalog.length" class="model-catalog">
-        <div class="catalog-title">已识别模型 · 勾选后可加入协作</div>
+        <div class="catalog-title">模型目录 · 勾选启用 / 停用</div>
         <div v-for="model in modelCatalog" :key="model.protocol + model.base_url + model.id" class="model-row">
-          <input v-model="model.enabled" type="checkbox" :aria-label="`启用 ${model.name}`" />
-          <div class="model-info"><strong>{{ model.name || model.id }}</strong><small>{{ model.id }} · {{ model.protocol }}</small></div>
+          <input v-model="model.enabled" type="checkbox" :aria-label="`启用 ${model.name || model.id}`" />
+          <div class="model-info"><strong>{{ model.name || model.id }}</strong><small>模型 ID：{{ model.id }}</small><small>{{ model.protocol }} · {{ model.base_url }}</small></div>
           <select v-model="model.role" :aria-label="`${model.id} 协作角色`">
             <option value="primary">主模型</option>
             <option value="worker">协作</option>
@@ -1009,13 +1074,21 @@ body {
 .api-actions button:disabled { cursor: wait; opacity: 0.55; }
 .api-hint { margin-top: 4px; color: #9a6d24; font-size: calc(10px * var(--ui-scale)); line-height: 1.35; }
 .provider-message { margin-top: 7px; padding: 6px 8px; border-radius: 8px; background: #f0faf4; color: #3f8058; font-size: calc(10px * var(--ui-scale)); line-height: 1.35; }
+.discovery-result { margin-top: 10px; padding: 8px; border: 1px solid #d8eee0; border-radius: 9px; background: #f7fcf8; }
+.discovery-row { display: flex; gap: 6px; align-items: baseline; padding: 3px 0; color: #40566d; font-size: calc(10px * var(--ui-scale)); }
+.discovery-row strong { overflow-wrap: anywhere; }
+.discovery-row span { color: #7b8a98; overflow-wrap: anywhere; }
 .model-catalog { margin-top: 10px; padding-top: 8px; border-top: 1px solid #edf1f4; }
 .catalog-title { margin-bottom: 6px; color: #637489; font-size: calc(11px * var(--ui-scale)); }
-.model-row { display: flex; align-items: center; gap: 6px; margin: 5px 0; font-size: calc(10px * var(--ui-scale)); }
-.model-info { min-width: 0; flex: 1; color: #40566d; overflow: hidden; }
-.model-info strong, .model-info small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-info small { color: #8a98a6; font-size: calc(9px * var(--ui-scale)); }
-.model-row select, .strategy-select { width: auto; margin: 0; padding: 4px; font-size: calc(10px * var(--ui-scale)); }
+.model-row { display: flex; align-items: flex-start; gap: 6px; margin: 7px 0; font-size: calc(10px * var(--ui-scale)); }
+.model-row > input { flex: 0 0 auto; margin-top: 3px; }
+.model-info { min-width: 0; flex: 1; color: #40566d; }
+.model-info strong, .model-info small { display: block; overflow-wrap: anywhere; white-space: normal; line-height: 1.25; }
+.model-info small { margin-top: 2px; }
+.model-info strong { color: #2f435a; }
+.model-info small { color: #7b8a98; font-size: calc(9px * var(--ui-scale)); }
+.model-info small { margin-top: 2px; }
+.model-row select, .strategy-select { flex: 0 0 auto; width: auto; max-width: 76px; margin: 0; padding: 4px; font-size: calc(10px * var(--ui-scale)); }
 .collab-toggle { display: flex !important; align-items: center; gap: 5px; margin: 8px 0 4px !important; }
 .catalog-save { width: 100%; margin-top: 7px; }.api-panel small { display: block; margin-top: calc(9px * var(--ui-scale)); color: #8a98a6; font-size: calc(10px * var(--ui-scale)); line-height: 1.4; overflow-wrap: anywhere; }
 .chat-bubble::after {
@@ -1107,4 +1180,3 @@ body {
   pointer-events: none;
 }
 </style>
-

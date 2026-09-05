@@ -144,6 +144,56 @@ export class Live2d {
     return x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height
   }
 
+  /**
+   * 将模型渲染成低复杂度 alpha 区域，供 Windows 原生 HWND 命中区域使用。
+   * 返回 canvas CSS 像素坐标；透明的模型包围盒不会拦截桌面鼠标。
+   */
+  getOpaqueRegions(padding = 3): Array<{ x: number; y: number; width: number; height: number }> {
+    if (!this.model || !this.app) return []
+    try {
+      const bounds = this.model.getBounds()
+      const resolution = Math.max(1, Number(this.app.renderer.resolution) || 1)
+      const pixelWidth = Math.max(1, Math.round(bounds.width * resolution))
+      const extract = (this.app.renderer as unknown as {
+        plugins?: { extract?: { pixels: (target: unknown) => Uint8Array } }
+      }).plugins?.extract
+      const pixels = extract?.pixels(this.model)
+      if (!pixels?.length) return []
+      const pixelHeight = Math.max(1, Math.floor(pixels.length / 4 / pixelWidth))
+      const block = 4
+      const regions: Array<{ x: number; y: number; width: number; height: number }> = []
+      for (let py = 0; py < pixelHeight; py += block) {
+        const yEnd = Math.min(pixelHeight, py + block)
+        let runStart = -1
+        for (let px = 0; px <= pixelWidth; px += 2) {
+          let opaque = false
+          const xEnd = Math.min(pixelWidth, px + 2)
+          for (let yy = py; yy < yEnd && !opaque; yy += 1) {
+            for (let xx = px; xx < xEnd; xx += 1) {
+              if ((pixels[(yy * pixelWidth + xx) * 4 + 3] ?? 0) > 18) {
+                opaque = true
+                break
+              }
+            }
+          }
+          const isLast = px + 2 >= pixelWidth
+          if (opaque && runStart < 0) runStart = px
+          if ((!opaque || isLast) && runStart >= 0) {
+            const end = opaque && isLast ? pixelWidth : px
+            const top = Math.max(0, bounds.y + py / resolution - padding)
+            const x = Math.max(0, bounds.x + runStart / resolution - padding)
+            const right = Math.min(this.app.screen.width, bounds.x + end / resolution + padding)
+            const bottom = Math.min(this.app.screen.height, bounds.y + yEnd / resolution + padding)
+            if (right > x && bottom > top) regions.push({ x, y: top, width: right - x, height: bottom - top })
+            runStart = -1
+          }
+        }
+      }
+      return regions.slice(0, 700)
+    } catch {
+      return []
+    }
+  }
   /** 当前模型的 world-space 包围盒，供聊天气泡和自动行为布局使用。 */
   getBounds(): { x: number; y: number; width: number; height: number } {
     const b = this.model?.getBounds()

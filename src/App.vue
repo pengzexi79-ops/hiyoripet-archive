@@ -566,7 +566,6 @@ function interactAt(x: number, y: number) {
   pet.playMotionRandom(tapCount % 3 === 0 || Math.random() < 0.35 ? 'Idle' : 'TapBody').catch(() => {})
   if (meta.value?.expressions.length && Math.random() < 0.35) pet.playExpressionRandom().catch(() => {})
   else randomFace()
-  maybeAutonomousTalk('被轻轻点击了')
 }
 
 function onContextMenu(e: MouseEvent) {

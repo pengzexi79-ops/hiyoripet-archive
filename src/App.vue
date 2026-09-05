@@ -7,7 +7,7 @@ import { LogicalSize, PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi
 import { Live2d, type ModelMeta, type PetPose } from './core/live2d'
 import { PetSocket, type WsStatus } from './core/ws'
 import { Chat } from './core/chat'
-import { clearApiConfig, discoverApiModels, fetchApiStatus, fetchCollaboration, fetchModelCatalog, saveApiConfig, saveCollaboration, saveModelCatalog, testApiConnection, type ApiProtocol, type ApiStatus, type CollaborationSettings, type DiscoveredModel, type ModelProfile } from './core/api'
+import { clearApiConfig, discoverApiModels, fetchApiStatus, fetchCollaboration, fetchModelCatalog, saveApiConfig, saveCollaboration, saveModelCatalog, testApiConnection, type ApiProtocol, type ApiStatus, type CollaborationSettings, type DiscoveredModel, type ModelCapability, type ModelProfile, type ModelTask } from './core/api'
 
 // 模型放置于 public/models/Hiyori/（Vite 构建时拷进 dist/models/，由 Tauri 资源一并打包）。
 const MODEL_URL = '/models/Hiyori/Hiyori.model3.json'
@@ -54,6 +54,10 @@ const apiDiscovering = ref(false)
 const apiTesting = ref(false)
 const catalogSaving = ref(false)
 const providerMessage = ref('')
+const pendingImage = ref('')
+const imageInput = ref<HTMLInputElement | null>(null)
+const importInput = ref<HTMLInputElement | null>(null)
+let discoveryAddedKeys: string[] = []
 // 调试 HUD 默认隐藏：桌宠画面上不显示任何 UI（此前底部白色面板会挡住模型下半身且碍眼）。
 // ── 桌宠交互：仅保留 Hiyori，缩放由滚轮控制 ──
 const guideVisible = ref(true)
@@ -335,7 +339,7 @@ function maybeAutonomousTalk(reason: string) {
     window.setTimeout(() => { autonomyBusy = false }, 2500)
     return
   }
-  chat.sendText(`这是桌宠场景事件：${reason}。请用一句自然、简短的中文回应，不要提及系统提示。`)
+  chat.sendText(`这是桌宠场景事件：${reason}。请用一句自然、简短的中文回应，不要提及系统提示。`, undefined, 'scene')
   window.setTimeout(() => { autonomyBusy = false }, 8000)
 }
 
@@ -367,6 +371,10 @@ async function loadApiPanelData() {
   }
 }
 
+function catalogKey(model: { protocol: string; base_url: string; id: string }) {
+  return `${model.protocol}|${model.base_url}|${model.id}`
+}
+
 async function discoverModels() {
   apiDiscovering.value = true
   apiError.value = ''
@@ -382,6 +390,8 @@ async function discoverModels() {
       base_url: normalizedBase,
       enabled: false,
       role: 'worker',
+      capabilities: model.capabilities?.length ? model.capabilities : (['text'] as ModelCapability[]),
+      tasks: model.tasks?.length ? model.tasks : (['chat', 'scene'] as ModelTask[]),
       api_key: apiForm.value.api_key,
     }))
     for (const discovered of discoveredModels.value) {
@@ -391,10 +401,11 @@ async function discoverModels() {
         if (discovered.api_key) existing.api_key = discovered.api_key
       } else {
         modelCatalog.value.push(discovered)
+        discoveryAddedKeys.push(catalogKey(discovered))
       }
     }
     if (!apiForm.value.model && result.models[0]) apiForm.value.model = result.models[0].id
-    providerMessage.value = `连接成功，识别到 ${result.models.length} 个可用模型；勾选后保存即可启用。`
+    providerMessage.value = `连接成功，识别到 ${result.models.length} 个可用模型；可一键启动或取消本次识别。`
   } catch (e) {
     apiError.value = (e as Error)?.message ?? String(e)
   } finally {
@@ -405,6 +416,94 @@ async function discoverModels() {
 function setDiscoveredEnabled(model: UiModelProfile) {
   const existing = modelCatalog.value.find((item) => item.protocol === model.protocol && item.base_url === model.base_url && item.id === model.id)
   if (existing) existing.enabled = model.enabled
+}
+
+async function enableAllDiscovered() {
+  if (!discoveredModels.value.length) return
+  catalogSaving.value = true
+  apiError.value = ''
+  try {
+    for (const model of discoveredModels.value) {
+      model.enabled = true
+      setDiscoveredEnabled(model)
+    }
+    const saved = await saveModelCatalog(modelCatalog.value)
+    const selected = saved.models.filter((model) => model.enabled).map((model) => model.id)
+    const next = await saveCollaboration({ ...collaboration.value, enabled: true, model_ids: selected })
+    modelCatalog.value = saved.models
+    collaboration.value = next
+    discoveredModels.value = []
+    discoveryAddedKeys = []
+    providerMessage.value = `已一键启动 ${selected.length} 个模型，多模型协作已开启。`
+    void fetchApiStatus().then(applyApiStatus).catch(() => {})
+  } catch (e) {
+    apiError.value = (e as Error)?.message ?? String(e)
+  } finally {
+    catalogSaving.value = false
+  }
+}
+
+function cancelDiscovery() {
+  const added = new Set(discoveryAddedKeys)
+  modelCatalog.value = modelCatalog.value.filter((model) => !added.has(catalogKey(model)) || model.enabled)
+  discoveredModels.value = []
+  discoveryAddedKeys = []
+  providerMessage.value = '已取消本次识别结果，未保存的识别模型已移除。'
+}
+
+async function importModelsFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  apiError.value = ''
+  try {
+    const parsed = JSON.parse(await file.text()) as { models?: unknown[] } | unknown[]
+    const rows = Array.isArray(parsed) ? parsed : Array.isArray((parsed as { models?: unknown[] }).models) ? (parsed as { models: unknown[] }).models : []
+    if (!rows.length) throw new Error('JSON 中缺少 models 数组')
+    let added = 0
+    for (const row of rows) {
+      const item = row as Partial<UiModelProfile>
+      const id = String(item.id || '').trim()
+      const baseUrl = String(item.base_url || '').replace(/\/$/, '')
+      if (!id || !baseUrl.startsWith('http')) continue
+      const profile: UiModelProfile = {
+        id,
+        name: String(item.name || id),
+        protocol: (item.protocol || 'openai-compatible') as ApiProtocol,
+        base_url: baseUrl,
+        enabled: Boolean(item.enabled),
+        role: item.role || 'worker',
+        capabilities: item.capabilities?.length ? item.capabilities : ['text'],
+        tasks: item.tasks?.length ? item.tasks : ['chat', 'scene'],
+        api_key: typeof item.api_key === 'string' ? item.api_key : undefined,
+      }
+      const existing = modelCatalog.value.find((model) => catalogKey(model) === catalogKey(profile))
+      if (existing) Object.assign(existing, profile)
+      else {
+        modelCatalog.value.push(profile)
+        added += 1
+      }
+    }
+    providerMessage.value = `导入完成：新增 ${added} 个模型；勾选后保存即可启用。`
+  } catch (e) {
+    apiError.value = (e as Error)?.message ?? String(e)
+  }
+}
+
+function pickImage(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  if (file.size > 4 * 1024 * 1024) {
+    wsError.value = '图片过大，请选择 4MB 以内的图片。'
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = () => { pendingImage.value = String(reader.result || '') }
+  reader.onerror = () => { wsError.value = '图片读取失败，请重试。' }
+  reader.readAsDataURL(file)
 }
 
 async function testConnection() {
@@ -518,12 +617,14 @@ async function clearApi() {
 
 function sendText() {
   const text = inputText.value.trim()
-  if (!text || !chat) return
+  const image = pendingImage.value
+  if ((!text && !image) || !chat) return
   subtitle.value = ''
   wsError.value = ''
   openBubble()
-  chat.sendText(text)
+  chat.sendText(text || '请看这张图片并简短回应。', image || undefined, image ? 'vision' : 'chat')
   inputText.value = ''
+  pendingImage.value = ''
   lastUserInteraction.value = Date.now()
 }
 
@@ -1139,13 +1240,21 @@ function onWheel(e: WheelEvent) {
         <button type="button" class="secondary-action" :disabled="apiDiscovering" @click="discoverModels">{{ apiDiscovering ? '识别中…' : '识别模型' }}</button>
         <button type="button" class="secondary-action" :disabled="apiTesting || !apiForm.model" @click="testConnection">{{ apiTesting ? '测试中…' : '测试连接' }}</button>
       </div>
+      <div class="api-actions">
+        <button type="button" class="secondary-action" @click="importInput?.click()">导入模型 JSON</button>
+        <input ref="importInput" type="file" accept=".json,application/json" hidden @change="importModelsFile" />
+      </div>
       <div v-if="providerMessage" class="provider-message">{{ providerMessage }}</div>
       <div v-if="discoveredModels.length" class="discovery-result">
         <div class="catalog-title">本次识别结果 · {{ discoveredModels.length }} 个模型</div>
         <label v-for="model in discoveredModels" :key="`found-${model.protocol}-${model.base_url}-${model.id}`" class="discovery-row">
           <input v-model="model.enabled" type="checkbox" :aria-label="`启用识别到的 ${model.name}`" @change="setDiscoveredEnabled(model)" />
-          <span class="discovery-info"><strong>{{ model.name }}</strong><small>模型 ID：{{ model.id }}</small></span>
+          <span class="discovery-info"><strong>{{ model.name }}</strong><small>模型 ID：{{ model.id }}</small><small>能力：{{ model.capabilities.join(' / ') }} · 任务：{{ model.tasks.join(' / ') }}</small></span>
         </label>
+        <div class="api-actions">
+          <button type="button" class="primary-action" :disabled="catalogSaving" @click="enableAllDiscovered">{{ catalogSaving ? '启动中…' : '一键启动全部' }}</button>
+          <button type="button" class="secondary-action" @click="cancelDiscovery">取消本次识别</button>
+        </div>
       </div>
       <div v-if="modelCatalog.length" class="model-catalog">
         <div class="catalog-title">模型目录 · 勾选启用 / 停用</div>
@@ -1193,7 +1302,10 @@ function onWheel(e: WheelEvent) {
     >
       <div class="bubble-head"><strong>日和</strong><button type="button" @click="closeBubble">×</button></div>
       <div v-if="subtitle" class="bubble-text">{{ subtitle }}<span v-if="typing" class="caret">▌</span></div>
+      <div v-if="pendingImage" class="pending-image"><img :src="pendingImage" alt="待发送图片" /><button type="button" @click="pendingImage = ''">×</button></div>
       <div class="bubble-input-row">
+        <button type="button" class="attach-image" title="发送图片（多模态）" @click="imageInput?.click()">🖼</button>
+        <input ref="imageInput" type="file" accept="image/*" hidden @change="pickImage" />
         <input v-model="inputText" type="text" placeholder="和日和聊聊…" @keydown.enter="sendText" />
         <button type="button" @click="sendText">发送</button>
       </div>
@@ -1328,6 +1440,10 @@ body {
   margin-top: 7px; background: transparent; color: #8898a8; font-size: 11px; padding: 2px 0;
 }
 .bubble-error { margin-top: 5px; color: #e74c3c; font-size: 11px; }
+.attach-image { border: 0; background: transparent; font-size: 15px; cursor: pointer; padding: 0 2px; }
+.pending-image { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.pending-image img { width: 44px; height: 44px; object-fit: cover; border-radius: 8px; border: 1px solid #d7e0e8; }
+.pending-image button { border: 0; background: transparent; color: #8493a3; font-size: 15px; cursor: pointer; }
 .subtitle {
   position: absolute;
   left: 50%;

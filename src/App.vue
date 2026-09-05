@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
@@ -97,29 +97,32 @@ let pendingZoom: number | null = null
 let zoomBusy = false
 let nativeRegionRequest = 0
 
-function isTauriWindow() {
-  return !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
-}
-
 async function syncNativeHitRegion() {
-  if (!isTauriWindow() || !pet) return
+  if (!pet) return
   const request = ++nativeRegionRequest
-  // Dialogs and chat inputs intentionally restore the full client region so their
-  // controls remain clickable; the normal pet-only state uses alpha strips.
-  if (apiPanelVisible.value || chatBubbleVisible.value) {
-    await invoke('clear_hit_region').catch(() => {})
-    return
-  }
+  // v-if 的面板/气泡需要等 Vue 提交 DOM、定位样式和一次布局帧后再测量。
+  await nextTick()
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
   if (request !== nativeRegionRequest || !pet) return
   const dpr = Math.max(1, window.devicePixelRatio || 1)
+  const root = canvas.value?.parentElement
+  const rootRect = root?.getBoundingClientRect()
   const regions = pet.getOpaqueRegions()
-  if (!regions.length) {
-    await invoke('clear_hit_region').catch(() => {})
-    return
-  }
+  // Live2D/WebGL 某些驱动会短暂返回空像素；保留上一次有效 HWND 区域，
+  // 不允许空结果退化成可拦截鼠标的整块矩形。
+  if (!regions.length) return
+  const domRegions = [apiPanel.value, bubble.value].flatMap((element) => {
+    if (!element || !rootRect) return []
+    const rect = element.getBoundingClientRect()
+    const x = Math.max(0, rect.left - rootRect.left - 2)
+    const y = Math.max(0, rect.top - rootRect.top - 2)
+    const right = Math.min(rootRect.width, rect.right - rootRect.left + 2)
+    const bottom = Math.min(rootRect.height, rect.bottom - rootRect.top + 2)
+    return right > x && bottom > y ? [{ x, y, width: right - x, height: bottom - y }] : []
+  })
+  const allRegions = [...regions, ...domRegions]
   await invoke('set_hit_region', {
-    rects: regions.map((rect) => ({
+    rects: allRegions.map((rect) => ({
       x: Math.floor(rect.x * dpr),
       y: Math.floor(rect.y * dpr),
       width: Math.max(1, Math.ceil(rect.width * dpr)),
@@ -387,6 +390,11 @@ async function discoverModels() {
   } finally {
     apiDiscovering.value = false
   }
+}
+
+function setDiscoveredEnabled(model: UiModelProfile) {
+  const existing = modelCatalog.value.find((item) => item.protocol === model.protocol && item.base_url === model.base_url && item.id === model.id)
+  if (existing) existing.enabled = model.enabled
 }
 
 async function testConnection() {
@@ -905,7 +913,6 @@ function onWheel(e: WheelEvent) {
       @contextmenu.prevent.stop="onContextMenu"
     ></canvas>
 
-    <div v-if="apiPanelVisible" class="popup-scrim" @pointerdown="closeApiPanel" @contextmenu.prevent="closeApiPanel"></div>
     <div
       v-if="apiPanelVisible"
       ref="apiPanel"
@@ -952,9 +959,10 @@ function onWheel(e: WheelEvent) {
       <div v-if="providerMessage" class="provider-message">{{ providerMessage }}</div>
       <div v-if="discoveredModels.length" class="discovery-result">
         <div class="catalog-title">本次识别结果 · {{ discoveredModels.length }} 个模型</div>
-        <div v-for="model in discoveredModels" :key="`found-${model.protocol}-${model.base_url}-${model.id}`" class="discovery-row">
-          <strong>{{ model.name }}</strong><span>模型 ID：{{ model.id }}</span>
-        </div>
+        <label v-for="model in discoveredModels" :key="`found-${model.protocol}-${model.base_url}-${model.id}`" class="discovery-row">
+          <input v-model="model.enabled" type="checkbox" :aria-label="`启用识别到的 ${model.name}`" @change="setDiscoveredEnabled(model)" />
+          <span class="discovery-info"><strong>{{ model.name }}</strong><small>模型 ID：{{ model.id }}</small></span>
+        </label>
       </div>
       <div v-if="modelCatalog.length" class="model-catalog">
         <div class="catalog-title">模型目录 · 勾选启用 / 停用</div>
@@ -1058,7 +1066,6 @@ body {
   transform: translateY(4px);
   pointer-events: none;
 }
-.popup-scrim { position: absolute; inset: 0; z-index: 70; background: transparent; }
 .api-panel { max-height: calc(100vh - 16px); overflow-y: auto; position: absolute; z-index: 80; width: min(calc(286px * var(--ui-scale)), calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow: auto; box-sizing: border-box; padding: calc(14px * var(--ui-scale)); border: 1px solid rgba(91, 117, 145, 0.2); border-radius: calc(16px * var(--ui-scale)); background: rgba(255, 255, 255, 0.98); color: #2f435a; box-shadow: 0 10px 30px rgba(31, 55, 78, 0.24); }
 .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: calc(10px * var(--ui-scale)); }
 .panel-subtitle { margin-top: 2px; color: #8a98a6; font-size: calc(10px * var(--ui-scale)); }
@@ -1075,9 +1082,12 @@ body {
 .api-hint { margin-top: 4px; color: #9a6d24; font-size: calc(10px * var(--ui-scale)); line-height: 1.35; }
 .provider-message { margin-top: 7px; padding: 6px 8px; border-radius: 8px; background: #f0faf4; color: #3f8058; font-size: calc(10px * var(--ui-scale)); line-height: 1.35; }
 .discovery-result { margin-top: 10px; padding: 8px; border: 1px solid #d8eee0; border-radius: 9px; background: #f7fcf8; }
-.discovery-row { display: flex; gap: 6px; align-items: baseline; padding: 3px 0; color: #40566d; font-size: calc(10px * var(--ui-scale)); }
-.discovery-row strong { overflow-wrap: anywhere; }
-.discovery-row span { color: #7b8a98; overflow-wrap: anywhere; }
+.discovery-row { display: flex; align-items: flex-start; gap: 6px; padding: 4px 0; color: #40566d; font-size: calc(10px * var(--ui-scale)); cursor: pointer; }
+.discovery-row > input { flex: 0 0 auto; margin-top: 3px; }
+.discovery-info { min-width: 0; flex: 1; }
+.discovery-info strong, .discovery-info small { display: block; overflow-wrap: anywhere; line-height: 1.25; }
+.discovery-info strong { color: #2f435a; }
+.discovery-info small { margin-top: 2px; color: #7b8a98; font-size: calc(9px * var(--ui-scale)); }
 .model-catalog { margin-top: 10px; padding-top: 8px; border-top: 1px solid #edf1f4; }
 .catalog-title { margin-bottom: 6px; color: #637489; font-size: calc(11px * var(--ui-scale)); }
 .model-row { display: flex; align-items: flex-start; gap: 6px; margin: 7px 0; font-size: calc(10px * var(--ui-scale)); }

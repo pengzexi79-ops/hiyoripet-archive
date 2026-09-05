@@ -134,14 +134,14 @@ export class Live2d {
   }
 
   /**
-   * 宽松命中：点是否落在模型可见包围盒内（world space，即 canvas CSS 像素）。
-   * 用途：Hiyori 的 HitAreas 只有 Body 一个且边界较紧，仅靠 hitTest 会出现「点身体没反应」；
-   * 桌宠场景下凡是点在模型范围内都应给反馈，故用包围盒兜底。
+   * 精确命中：点必须落在模型不透明轮廓内（world space，即 canvas CSS 像素）。
+   * 不再使用模型包围盒兜底，避免透明的大矩形拦截桌面鼠标或触发互动。
    */
   containsPoint(x: number, y: number): boolean {
     if (!this.model) return false
-    const b = this.model.getBounds()
-    return x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height
+    return this.getOpaqueRegions(0).some((rect) =>
+      x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height,
+    )
   }
 
   /**
@@ -150,24 +150,40 @@ export class Live2d {
    */
   getOpaqueRegions(padding = 3): Array<{ x: number; y: number; width: number; height: number }> {
     if (!this.model || !this.app) return []
+    // WebGL 的 extract 插件在部分 WebView2 驱动上会返回空像素；不能因此清除 HWND 区域，
+    // 否则透明窗口会退化为整块长方形并拦截桌面。Hiyori 固定角色用紧凑分段轮廓兜底。
+    let fallback: (() => Array<{ x: number; y: number; width: number; height: number }>) | undefined
     try {
       const bounds = this.model.getBounds()
+      fallback = () => {
+        const bands = [
+          [0.08, 0.18, 0.36, 0.64], [0.16, 0.34, 0.31, 0.69],
+          [0.28, 0.50, 0.29, 0.71], [0.45, 0.68, 0.35, 0.65],
+          [0.64, 0.77, 0.32, 0.68], [0.74, 0.93, 0.39, 0.49],
+          [0.74, 0.93, 0.51, 0.61], [0.90, 0.97, 0.34, 0.66],
+        ]
+        return bands.map(([y0, y1, x0, x1]) => ({
+          x: Math.max(0, bounds.x + bounds.width * x0 - padding),
+          y: Math.max(0, bounds.y + bounds.height * y0 - padding),
+          width: Math.min(this.app!.screen.width, bounds.width * (x1 - x0) + padding * 2),
+          height: Math.min(this.app!.screen.height, bounds.height * (y1 - y0) + padding * 2),
+        }))
+      }
       const resolution = Math.max(1, Number(this.app.renderer.resolution) || 1)
       const pixelWidth = Math.max(1, Math.round(bounds.width * resolution))
       const extract = (this.app.renderer as unknown as {
         plugins?: { extract?: { pixels: (target: unknown) => Uint8Array } }
       }).plugins?.extract
       const pixels = extract?.pixels(this.model)
-      if (!pixels?.length) return []
+      if (!pixels?.length) return fallback()
       const pixelHeight = Math.max(1, Math.floor(pixels.length / 4 / pixelWidth))
-      const block = 4
       const regions: Array<{ x: number; y: number; width: number; height: number }> = []
-      for (let py = 0; py < pixelHeight; py += block) {
-        const yEnd = Math.min(pixelHeight, py + block)
+      for (let py = 0; py < pixelHeight; py += 4) {
+        const yEnd = Math.min(pixelHeight, py + 4)
         let runStart = -1
         for (let px = 0; px <= pixelWidth; px += 2) {
-          let opaque = false
           const xEnd = Math.min(pixelWidth, px + 2)
+          let opaque = false
           for (let yy = py; yy < yEnd && !opaque; yy += 1) {
             for (let xx = px; xx < xEnd; xx += 1) {
               if ((pixels[(yy * pixelWidth + xx) * 4 + 3] ?? 0) > 18) {
@@ -189,9 +205,11 @@ export class Live2d {
           }
         }
       }
-      return regions.slice(0, 700)
+      return regions.length ? regions.slice(0, 700) : fallback()
     } catch {
-      return []
+      // A transient Live2D layout mutation should preserve the previous native
+      // region in App.vue rather than turning the transparent window rectangular.
+      return fallback?.() ?? []
     }
   }
   /** 当前模型的 world-space 包围盒，供聊天气泡和自动行为布局使用。 */

@@ -203,3 +203,13 @@
   - `pet-backend.exe` `7E32C9CF6E9EF204CF659099B67C5B6763848CCD48CE5B85AC4513B74F388051`
   - `HiyoriPet_0.1.3_portable.zip` `B0F43EBB44CAFDA776733AC6B0C2B41BA4BD5B72956CC5ACE8064EDA1B9FD4B3`
   - `HiyoriPet_0.1.3_x64-setup.exe` `9632578DEBC4DAEDDFD4F33C9339A0AE18DBA99EF7FDBC6D0C0A9D4A3CE8056F`
+
+## 2026-09-05 命中区域最终修复（已完成）
+- ✅ 删除 `clear_hit_region` 命令和 `SetWindowRgn(hwnd, None)` 路径；透明窗口不会在关闭面板/气泡后退化成整窗矩形。
+- ✅ 原生命中区由日和不透明分段组成；API 面板和聊天气泡只加入各自真实 DOM 矩形，并在 Vue 提交和布局帧完成后同步，随缩放更新。
+- ✅ 删除全屏透明 scrim；API 面板可用关闭按钮、Esc 或再次右键关闭，面板打开时宠物固定，透明区域仍穿透桌面。
+- ✅ `containsPoint` 只判断不透明区域，不再用 Live2D 完整包围盒，解决“看不见但鼠标点不了”的大矩形障碍。
+- ✅ 真实 Release 冒烟：首屏人物完整可见；左键点击产生动作/表情反馈且不弹设置；右键 API 面板打开/关闭正常；气泡定位到头部附近、约 3 秒后淡出；面板/气泡命中区与窗口外透明区均通过 Win32 检查。
+- ✅ 重复启动保持单个 `HiyoriPet.exe`，不新增桌宠或 sidecar；退出后应用、两个 PyInstaller 进程和 8000 端口均释放。
+- ✅ 门禁：TypeScript、Vite、Python `compileall`、GNU `cargo check`、Tauri GNU Release NSIS 全部通过；仅保留已知非致命 MinGW `.rsrc merge failure: multiple non-default manifests` 警告。
+- ✅ 最新交付物已覆盖：`D:/codex/pet/release/HiyoriPet/HiyoriPet.exe`、便携 ZIP、NSIS 安装包；桌面快捷方式仍指向 Release 可执行文件并使用日和图标。

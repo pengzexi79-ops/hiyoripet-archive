@@ -44,9 +44,8 @@ fn set_hit_region(window: WebviewWindow, rects: Vec<HitRegionRect>) -> Result<()
             count += 1;
         }
         if count == 0 {
-            unsafe { SetWindowRgn(hwnd, None, true) };
             let _ = unsafe { DeleteObject(HGDIOBJ(region.0)) };
-            return Ok(());
+            return Err("桌宠命中区域为空，已保留上一次有效区域".to_string());
         }
         let result = unsafe { SetWindowRgn(hwnd, Some(region), true) };
         if result == 0 {
@@ -63,18 +62,6 @@ fn set_hit_region(window: WebviewWindow, rects: Vec<HitRegionRect>) -> Result<()
     }
 }
 
-#[tauri::command]
-fn clear_hit_region(window: WebviewWindow) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        use windows::Win32::Graphics::Gdi::SetWindowRgn;
-        let hwnd = window.hwnd().map_err(|error| error.to_string())?;
-        unsafe { SetWindowRgn(hwnd, None, true) };
-    }
-    #[cfg(not(windows))]
-    let _ = window;
-    Ok(())
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -87,7 +74,7 @@ pub fn run() {
                 let _ = window.emit("pet-opened", ());
             }
         }))
-        .invoke_handler(tauri::generate_handler![set_hit_region, clear_hit_region])
+        .invoke_handler(tauri::generate_handler![set_hit_region])
         .setup(|app| {
             app.manage(backend::launch(app));
             tray::build_tray(app)?;

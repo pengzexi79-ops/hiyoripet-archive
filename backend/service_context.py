@@ -1,4 +1,8 @@
-# Service locator for AI capabilities and runtime user API settings.
+from __future__ import annotations
+
+import asyncio
+
+from api_catalog import ModelCatalog, ModelProfile, discover_models, test_connection
 from api_provider import ApiSettings, UniversalLLM, clear_user_settings, load_user_settings, save_user_settings
 from asr.asr_factory import build_asr
 from config_manager import AppConfig, load_config
@@ -16,6 +20,7 @@ class ServiceContext:
         self.tts = build_tts(self.config.default_tts, tts_cfg)
         self.asr = build_asr(self.config.default_asr, asr_cfg)
         self.history: list[dict] = []
+        self.catalog = ModelCatalog()
         self.user_api = load_user_settings()
         self._load_llm()
 
@@ -28,24 +33,24 @@ class ServiceContext:
             raise RuntimeError("配置缺失：default_llm 必须对应已定义的 configs")
         self.llm = build_llm(self.config.default_llm, cfg)
 
+    def _active_profiles(self) -> list[ModelProfile]:
+        collaboration = self.catalog.collaboration()
+        if not collaboration.get("enabled"):
+            return []
+        profiles = {profile.id: profile for profile in self.catalog.runtime_profiles() if profile.enabled}
+        selected = collaboration.get("model_ids") or list(profiles)
+        return [profiles[item] for item in selected if item in profiles]
+
     def api_status(self) -> dict:
+        profiles = self._active_profiles()
+        if profiles:
+            first = profiles[0]
+            return {"configured": True, "protocol": first.protocol, "base_url": first.base_url, "model": first.id, "source": "catalog"}
         if self.user_api:
-            return {
-                "configured": True,
-                "protocol": self.user_api.protocol,
-                "base_url": self.user_api.base_url,
-                "model": self.user_api.model,
-                "source": "user",
-            }
+            return {"configured": True, "protocol": self.user_api.protocol, "base_url": self.user_api.base_url, "model": self.user_api.model, "source": "user"}
         cfg = self.config.llm_configs.get(self.config.default_llm)
         configured = bool(cfg and cfg.api_key)
-        return {
-            "configured": configured,
-            "protocol": cfg.provider if configured else "openai-compatible",
-            "base_url": cfg.base_url if configured else "",
-            "model": cfg.model if configured else "",
-            "source": "environment" if configured else "local",
-        }
+        return {"configured": configured, "protocol": cfg.provider if configured else "openai-compatible", "base_url": cfg.base_url if configured else "", "model": cfg.model if configured else "", "source": "environment" if configured else "local"}
 
     def save_api(self, protocol: str, base_url: str, api_key: str, model: str) -> dict:
         if not api_key.strip() and self.user_api:
@@ -62,8 +67,58 @@ class ServiceContext:
         self._load_llm()
         return self.api_status()
 
+    def public_models(self) -> list[dict]:
+        return self.catalog.public_models()
 
-_sc: "ServiceContext | None" = None
+    def save_models(self, items: list[dict]) -> list[dict]:
+        return self.catalog.save_models(items)
+
+    def collaboration(self) -> dict:
+        return self.catalog.collaboration()
+
+    def save_collaboration(self, value: dict) -> dict:
+        return self.catalog.save_collaboration(value)
+
+    async def discover(self, protocol: str, base_url: str, api_key: str) -> dict:
+        return await discover_models(protocol, base_url, api_key)
+
+    async def test_connection(self, protocol: str, base_url: str, api_key: str, model: str) -> dict:
+        return await test_connection(protocol, base_url, api_key, model)
+
+    async def _collect(self, profile: ModelProfile, messages: list[dict]) -> str:
+        chunks: list[str] = []
+        async for chunk in UniversalLLM(ApiSettings(profile.protocol, profile.base_url, profile.api_key, profile.id)).chat_iter(messages):
+            chunks.append(chunk)
+        answer = "".join(chunks).strip()
+        if not answer:
+            raise RuntimeError(f"模型 {profile.id} 返回空内容")
+        return answer
+
+    async def chat_iter(self, messages: list[dict]):
+        profiles = self._active_profiles()
+        if not profiles:
+            async for piece in self.llm.chat_iter(messages):
+                yield piece
+            return
+        strategy = self.catalog.collaboration().get("strategy", "fallback")
+        if strategy == "parallel":
+            results = await asyncio.gather(*(self._collect(profile, messages) for profile in profiles), return_exceptions=True)
+            answers = [item for item in results if isinstance(item, str)]
+            if not answers:
+                raise RuntimeError("所有协作模型均调用失败")
+            yield "\n\n".join(answers)
+            return
+        last_error: Exception | None = None
+        for profile in profiles:
+            try:
+                yield await self._collect(profile, messages)
+                return
+            except Exception as exc:
+                last_error = exc
+        raise last_error or RuntimeError("没有可用的协作模型")
+
+
+_sc: ServiceContext | None = None
 
 
 def get_service_context() -> ServiceContext:

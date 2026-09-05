@@ -20,6 +20,37 @@ class ApiConfigInput(BaseModel):
     model: str
 
 
+class DiscoverInput(BaseModel):
+    protocol: str
+    base_url: str
+    api_key: str = ""
+
+
+class TestInput(DiscoverInput):
+    model: str
+
+
+class ModelInput(BaseModel):
+    id: str
+    name: str = ""
+    protocol: str = "openai-compatible"
+    base_url: str
+    api_key: str = ""
+    enabled: bool = True
+    role: str = "worker"
+
+
+class ModelsInput(BaseModel):
+    models: list[ModelInput]
+
+
+class CollaborationInput(BaseModel):
+    enabled: bool = False
+    strategy: str = "fallback"
+    judge_model_id: str | None = None
+    model_ids: list[str] = []
+
+
 def _system_prompt() -> str:
     return get_service_context().config.agent.get("system_prompt") or DEFAULT_SYSTEM
 
@@ -35,8 +66,8 @@ def _local_reply(text: str, degraded: bool = False) -> str:
     if any(word in normalized for word in ("谢谢", "再见", "晚安")):
         return "不用客气～我就在桌面边上，想我时再点一下。"
     if degraded:
-        return "API 暂时连接失败，我先用本地陪伴模式陪你。点“修改 API”可检查配置。"
-    return "我听见啦～现在是本地陪伴模式。点聊天框里的“添加 API”就能接入更多模型。"
+        return "API 暂时连接失败，我先用本地陪伴模式陪你。请在右键 API 设置中检查配置。"
+    return "我听见啦～现在是本地陪伴模式。可以在右键 API 设置中接入模型。"
 
 
 def _status_message(status: dict, healthy: bool | None = None) -> dict:
@@ -70,6 +101,49 @@ async def save_api_config(payload: ApiConfigInput):
 @app.delete("/api/config")
 async def delete_api_config():
     return get_service_context().clear_api()
+
+
+@app.post("/api/discover")
+async def discover_api_models(payload: DiscoverInput):
+    try:
+        return await get_service_context().discover(payload.protocol, payload.base_url, payload.api_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/test")
+async def test_api_connection(payload: TestInput):
+    try:
+        return await get_service_context().test_connection(payload.protocol, payload.base_url, payload.api_key, payload.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/models")
+async def get_model_catalog():
+    return {"models": get_service_context().public_models()}
+
+
+@app.post("/api/models")
+async def save_model_catalog(payload: ModelsInput):
+    try:
+        models = [item.model_dump() for item in payload.models]
+        return {"models": get_service_context().save_models(models)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/collaboration")
+async def get_collaboration():
+    return get_service_context().collaboration()
+
+
+@app.post("/api/collaboration")
+async def save_collaboration(payload: CollaborationInput):
+    try:
+        return get_service_context().save_collaboration(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.websocket("/ws")
@@ -112,7 +186,7 @@ async def _handle_text(ws: WebSocket, sc, text: str):
     messages = [{"role": "system", "content": _system_prompt()}] + sc.history[-20:]
     try:
         acc = ""
-        async for piece in sc.llm.chat_iter(messages):
+        async for piece in sc.chat_iter(messages):
             acc += piece
             await ws.send_json({"type": "ai-response", "text": piece, "emotion": "normal"})
         if not acc:

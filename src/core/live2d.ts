@@ -25,6 +25,7 @@ export interface ModelMeta {
 
 export class Live2d {
   private app: PIXI.Application | null = null
+  private view: HTMLCanvasElement | null = null
   // 精确类型（pixi-live2d-display@0.4.0 已导出 Live2DModel）。
   private model: Live2DModel | null = null
   // 加载/resize 时的 contain 基准缩放，zoom 相对它计算。
@@ -45,6 +46,18 @@ export class Live2d {
       antialias: true,
       autoStart: true,
     })
+    this.view = canvas
+    this.syncRendererSize()
+  }
+
+  /** ResizePlugin 首帧可能仍是 PIXI 默认尺寸；加载前强制同步真实 WebView CSS 尺寸。 */
+  syncRendererSize(): void {
+    if (!this.app || !this.view) return
+    const width = Math.max(1, Math.round(this.view.clientWidth || window.innerWidth))
+    const height = Math.max(1, Math.round(this.view.clientHeight || window.innerHeight))
+    if (this.app.screen.width !== width || this.app.screen.height !== height) {
+      this.app.renderer.resize(width, height)
+    }
   }
 
   async load(path: string): Promise<ModelMeta> {
@@ -57,6 +70,7 @@ export class Live2d {
     this.model = next
     this.app.stage.addChild(this.model)
     const meta = this.scanMeta()
+    this.syncRendererSize()
     this.resizeModel(meta)
     return meta
   }

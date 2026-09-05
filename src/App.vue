@@ -21,7 +21,7 @@ const clickthroughBusy = ref(false)
 const rightClickTimer = ref<number | undefined>(undefined)
 const hasCore = ref(true)
 const meta = ref<ModelMeta | null>(null)
-const lastInteraction = ref(0)
+const lastUserInteraction = ref(0)
 
 // M3 对话状态
 const wsStatus = ref<WsStatus>('closed')
@@ -40,7 +40,6 @@ const guideVisible = ref(true)
 const reaction = ref<{ text: string; x: number; y: number } | null>(null)
 const chatBubbleVisible = ref(false)
 const bubblePos = ref({ x: 0, y: 0, side: 'right' as 'left' | 'right' })
-const petLabelVisible = ref(false)
 const zoomLevel = ref(1)
 
 let pet: Live2d | null = null
@@ -54,6 +53,8 @@ let wanderTarget: { x: number; y: number } | null = null
 let desktopWanderTarget: { x: number; y: number } | null = null
 let desktopPosition: { x: number; y: number } | null = null
 let desktopMoveBusy = false
+let nextWanderAt = 0
+let tapCount = 0
 let rightClickCount = 0
 let stopPetVisibilityListener: UnlistenFn | undefined
 let stopPetHiddenListener: UnlistenFn | undefined
@@ -67,8 +68,8 @@ async function loadModel() {
     status.value = '加载模型中…'
     const m = await pet.load(MODEL_URL)
     meta.value = m
-    lastInteraction.value = Date.now()
-    petLabelVisible.value = true
+    lastUserInteraction.value = Date.now()
+    nextWanderAt = Date.now() + 12000
     status.value = `已加载：${Object.keys(m.motions).length} 组动作 / ${m.expressions.length} 个表情`
   } catch (e) {
     status.value = `模型加载失败：${(e as Error)?.message ?? e}（请确认 public/models/Hiyori 已放入资产）`
@@ -85,6 +86,7 @@ onMounted(async () => {
   }
   pet = new Live2d()
   pet.initApp(canvas.value)
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
   await loadModel()
   startIdle()
   startBehavior()
@@ -103,15 +105,14 @@ onMounted(async () => {
       status.value = event.payload ? '穿透中：请用托盘关闭' : '可交互（可拖动）'
     })
     stopPetVisibilityListener = await listen('pet-opened', () => {
-      petLabelVisible.value = true
-      status.value = 'pet 已打开'
-      lastInteraction.value = Date.now()
+      status.value = '桌宠已打开'
+      lastUserInteraction.value = Date.now()
+      nextWanderAt = Date.now() + 12000
       desktopWanderTarget = null
       startBehavior()
     })
     stopPetHiddenListener = await listen('pet-hidden', () => {
       closeBubble()
-      petLabelVisible.value = false
       stopBehavior()
     })
   }
@@ -193,7 +194,7 @@ function applyApiStatus(next: ApiStatus) {
 function openApiPanel() {
   apiError.value = ''
   apiPanelVisible.value = true
-  lastInteraction.value = Date.now()
+  lastUserInteraction.value = Date.now()
 }
 
 function closeApiPanel() {
@@ -239,7 +240,7 @@ function sendText() {
   openBubble()
   chat.sendText(text)
   inputText.value = ''
-  lastInteraction.value = Date.now()
+  lastUserInteraction.value = Date.now()
 }
 
 // ── M2：空闲自播待机动作（数据流 C）──
@@ -247,10 +248,14 @@ function startIdle() {
   stopIdle()
   idleTimer = window.setInterval(() => {
     if (clickthrough.value || !pet) return
-    const idle = Date.now() - lastInteraction.value > 8000
+    const idle = Date.now() - lastUserInteraction.value > 8000
     if (idle) {
       pet.playMotionRandom('Idle').catch(() => {})
-      lastInteraction.value = Date.now()
+      if (Math.random() < 0.45) pet.applyFace(FACES[Math.floor(Math.random() * FACES.length)])
+      if (Math.random() < 0.3) {
+        const b = pet.getBounds()
+        showReaction(b.x + b.width / 2, b.y + b.height * 0.18)
+      }
     }
   }, 8000)
 }
@@ -271,6 +276,7 @@ async function stepDesktopWander() {
       desktopPosition = { x: position.x, y: position.y }
     }
     if (!desktopWanderTarget) {
+      if (Date.now() < nextWanderAt) return
       const [monitor, size] = await Promise.all([currentMonitor(), appWindow.outerSize()])
       if (!monitor) return
       const minX = monitor.workArea.position.x
@@ -289,7 +295,7 @@ async function stepDesktopWander() {
     const distance = Math.hypot(dx, dy)
     if (distance < 5) {
       desktopWanderTarget = null
-      lastInteraction.value = Date.now()
+      nextWanderAt = Date.now() + 3000 + Math.random() * 6000
       return
     }
     const step = Math.min(3, distance)
@@ -307,7 +313,7 @@ function startBehavior() {
   stopBehavior()
   behaviorTimer = window.setInterval(() => {
     if (!pet || clickthrough.value || chatBubbleVisible.value || press) return
-    if (Date.now() - lastInteraction.value < 12000) return
+    if (Date.now() - lastUserInteraction.value < 12000) return
     if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
       void stepDesktopWander()
       return
@@ -316,6 +322,7 @@ function startBehavior() {
     const halfW = Math.max(48, b.width / 2)
     const halfH = Math.max(80, b.height / 2)
     if (!wanderTarget) {
+      if (Date.now() < nextWanderAt) return
       wanderTarget = {
         x: halfW + 12 + Math.random() * Math.max(1, window.innerWidth - halfW * 2 - 24),
         y: halfH + 12 + Math.random() * Math.max(1, window.innerHeight - halfH * 2 - 24),
@@ -328,7 +335,7 @@ function startBehavior() {
     const distance = Math.hypot(dx, dy)
     if (distance < 8) {
       wanderTarget = null
-      lastInteraction.value = Date.now()
+      nextWanderAt = Date.now() + 3000 + Math.random() * 6000
     } else pet.setPosition(p.x + dx / distance * 3, p.y + dy / distance * 3)
   }, 120)
 }
@@ -344,11 +351,11 @@ function randomFace() {
   if (!pet) return
   pet.applyFace(FACES[Math.floor(Math.random() * FACES.length)])
   status.value = '换了个表情～'
-  lastInteraction.value = Date.now()
+  lastUserInteraction.value = Date.now()
 }
 
 function showReaction(x: number, y: number) {
-  const marks = ['💗', '✨', '♪', '！']
+  const marks = ['💗', '✨', '♪', '！', '🌸', '😊', '～']
   reaction.value = { text: marks[Math.floor(Math.random() * marks.length)], x, y }
   if (reactionTimer) clearTimeout(reactionTimer)
   reactionTimer = window.setTimeout(() => (reaction.value = null), 900)
@@ -362,7 +369,7 @@ type PetApiAction =
 function onApiAction(event: Event) {
   const action = (event as CustomEvent<PetApiAction>).detail
   if (!pet || !action) return
-  lastInteraction.value = Date.now()
+  lastUserInteraction.value = Date.now()
   if (action.type === 'motion') pet.playMotionRandom(action.group).catch(() => {})
   if (action.type === 'face') pet.applyFace(action.name)
   if (action.type === 'say') {
@@ -387,7 +394,6 @@ function positionBubble() {
   }
 }
 function openBubble() {
-  petLabelVisible.value = true
   chatBubbleVisible.value = true
   positionBubble()
 }
@@ -397,7 +403,6 @@ function closeBubble() {
 }
 async function closePet() {
   closeBubble()
-  petLabelVisible.value = false
   stopBehavior()
   desktopWanderTarget = null
   await getCurrentWindow().hide().catch(() => {})
@@ -442,10 +447,11 @@ function interactAt(x: number, y: number) {
   pet.focus(x, y)
   openBubble()
   showReaction(x, y)
-  lastInteraction.value = Date.now()
+  lastUserInteraction.value = Date.now()
   status.value = hits.includes('Head') ? '摸摸头～' : hits.includes('Body') ? '被摸到了～' : '戳到啦～'
-  pet.playMotionRandom('TapBody').catch(() => {})
-  if (meta.value?.expressions.length) pet.playExpressionRandom().catch(() => {})
+  tapCount += 1
+  pet.playMotionRandom(tapCount % 3 === 0 || Math.random() < 0.35 ? 'Idle' : 'TapBody').catch(() => {})
+  if (meta.value?.expressions.length && Math.random() < 0.35) pet.playExpressionRandom().catch(() => {})
   else randomFace()
 }
 
@@ -467,7 +473,7 @@ function onPointerMove(e: PointerEvent) {
   if (Math.hypot(e.clientX - press.clientX, e.clientY - press.clientY) < 7) return
   press = null
   desktopWanderTarget = null
-  lastInteraction.value = Date.now()
+  lastUserInteraction.value = Date.now()
   void getCurrentWindow().startDragging().catch(() => {})
 }
 function onPointerUp(e: PointerEvent) {
@@ -484,7 +490,7 @@ function onPointerCancel(e: PointerEvent) {
 
 function onWheel(e: WheelEvent) {
   void resizeForZoom(zoomLevel.value * (e.deltaY > 0 ? 0.9 : 1.1))
-  lastInteraction.value = Date.now()
+  lastUserInteraction.value = Date.now()
 }
 
 function onContextMenu() {
@@ -509,7 +515,7 @@ async function toggle() {
     clickthrough.value = next
     status.value = next ? '穿透中：请用托盘关闭（窗口暂不可点击）' : '可交互（可拖动）'
     guideVisible.value = !next
-    lastInteraction.value = Date.now()
+    lastUserInteraction.value = Date.now()
   } catch (e) {
     status.value = `穿透切换失败：${(e as Error)?.message ?? e}`
   } finally {
@@ -566,7 +572,6 @@ async function toggle() {
       class="reaction"
       :style="{ left: reaction.x + 'px', top: reaction.y + 'px' }"
     >{{ reaction.text }}</div>
-    <div v-if="petLabelVisible" class="pet-label">pet</div>
     <div
       v-if="chatBubbleVisible"
       class="chat-bubble"
@@ -575,7 +580,7 @@ async function toggle() {
       @pointerdown.stop
       @click.stop
     >
-      <div class="bubble-head"><strong>pet</strong><button type="button" @click="closeBubble">×</button></div>
+      <div class="bubble-head"><strong>日和</strong><button type="button" @click="closeBubble">×</button></div>
       <button v-if="!apiStatus.configured" type="button" class="api-status" @click="openApiPanel">
         <span>当前未接入 API</span><span>添加 API ›</span>
       </button>
@@ -619,19 +624,6 @@ body {
   display: block;
   background: transparent !important;
   touch-action: none;
-}
-.pet-label {
-  position: absolute;
-  left: 10px;
-  top: 10px;
-  z-index: 20;
-  padding: 4px 9px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.82);
-  color: #3d526b;
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  pointer-events: none;
 }
 .chat-bubble {
   position: absolute;

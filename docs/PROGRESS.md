@@ -162,7 +162,19 @@
 - ✅ 门禁：`pnpm exec tsc --noEmit`、`pnpm build`、GNU `cargo check`、`pnpm tauri build --target x86_64-pc-windows-gnu --bundles nsis` 全绿；仅有既有良性 `.rsrc merge failure` 警告。
 - ✅ 交付：`D:/codex/pet/release/HiyoriPet_0.1.1_x64-setup.exe`、`D:/codex/pet/release/HiyoriPet_0.1.1_portable.zip`、桌面 `日和桌宠.lnk`。
 - SHA-256：`HiyoriPet.exe 490B903D32166C1B9A472EF56783C9B15A39F39C344F5B6F5DE5BB91FDAAE0A8`；`pet-backend.exe 336558C0DE2185E86F70C9473E99191FAFACCE54E82230C1731FFB2271C6B47D`；`portable.zip 4817CF22F7883D0B6A25540CEA6480A249658E7D856B0B8FB55B436961D95695`；`setup.exe A5285C1F6F2C4A171EFD6D2FA8F9ED4A73D979A1903473FCBB232E3A57DEE7AB`。
-## HiyoriPet 0.1.3 安全修复（2026-09-05）
-- ✅ 删除会导致桌面失去响应的窗口输入模式、低级鼠标钩子与阻塞确认框。
-- ✅ 右键不再绑定应用功能；左键互动、拖动、滚轮缩放和托盘显示/隐藏保持可用。
-- ⏳ 重新执行 GNU Release、安装包、便携包和真实桌面冒烟验收。
+## HiyoriPet 0.1.3 安全修复与最终发布（2026-09-05）
+- ✅ 删除会导致桌面失去响应的窗口输入模式、低级鼠标钩子、阻塞确认框、Tauri 命令、托盘入口和窗口权限；右键不绑定应用功能。
+- ✅ 修复首次启动模型被按原始画布尺寸渲染的问题：以内部模型画布计算 contain 基准，并独立保存用户缩放倍率；真实 Release 首次启动 360×600 窗口中人物包围盒为 345.6×484.8，完整可见。
+- ✅ 真实 Release 右键冒烟：应用持续响应、标题仍为“日和桌宠”、无弹窗、无旧窗口模式状态；静态源码/配置/文档扫描无相关功能残留。
+- ✅ 最小 234×390 窗口冒烟：人物包围盒 224.64×315.15 完整可见；API 面板 218×374 完整位于视口内，关闭按钮可用。
+- ✅ 聊天/API 冒烟：点击人物打开气泡，显示“当前未接入 API / 添加 API”；自定义接口及国内外预设存在，API 面板可打开并关闭。
+- ✅ 主动行为冒烟：空闲 18 秒后原生窗口从 (814,721) 移动到 (545,724)，进程保持响应。
+- ✅ 单实例/隐藏恢复：重复启动只保留 1 个 HiyoriPet.exe；隐藏后重复启动唤醒同一窗口并恢复可见；PyInstaller 后端的两个进程为正常父子结构。
+- ✅ 正常关闭回收：应用退出后 HiyoriPet.exe、sidecar 进程均为 0，8000/1420 端口均释放。
+- ✅ 门禁：pnpm exec tsc --noEmit、pnpm build、Python compileall、GNU cargo check、pnpm tauri build --target x86_64-pc-windows-gnu --bundles nsis 全部通过；仅有既有良性 MinGW .rsrc merge failure 警告。
+- ✅ 交付物：
+  - D:/codex/pet/release/HiyoriPet/HiyoriPet.exe
+  - D:/codex/pet/release/HiyoriPet_0.1.3_portable.zip
+  - D:/codex/pet/release/HiyoriPet_0.1.3_x64-setup.exe
+  - D:/Users/Windows/Desktop/日和桌宠.lnk
+- SHA-256：HiyoriPet.exe ED572ADFDBE0F0344E1B3466402057D5721366F6859C17B5A088676EDBA45A34；pet-backend.exe B1AEEFB75FA5739EB0A716870F748748EAAE1B2A692F0E7D41DF6753445D6799；portable.zip A56FC06248ED1295F8F5556096C34B98F07071BEB24F58EEC2B3E7A0B263C546；setup.exe FE30503E2EF923EF2E60B723B0BAF94EFA8E88AF5C0E183B345FC5CC7E833E02。

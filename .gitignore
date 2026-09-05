@@ -19,3 +19,5 @@ release/
 
 # Local smoke-test scripts and screenshots
 _verification/
+backend/build/
+backend/pet-backend.spec

@@ -1,7 +1,10 @@
 use std::{
     ffi::c_void,
     ptr::{null, null_mut},
-    sync::{atomic::{AtomicBool, Ordering}, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        OnceLock,
+    },
     thread,
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
@@ -34,11 +37,25 @@ mod native_recovery {
     type HookProc = Option<unsafe extern "system" fn(i32, usize, isize) -> isize>;
 
     #[repr(C)]
-    struct Point { x: i32, y: i32 }
+    struct Point {
+        x: i32,
+        y: i32,
+    }
     #[repr(C)]
-    struct Rect { left: i32, top: i32, right: i32, bottom: i32 }
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
     #[repr(C)]
-    struct MouseHook { point: Point, mouse_data: u32, flags: u32, time: u32, extra: usize }
+    struct MouseHook {
+        point: Point,
+        mouse_data: u32,
+        flags: u32,
+        time: u32,
+        extra: usize,
+    }
     #[repr(C)]
     struct Message {
         hwnd: Handle,
@@ -59,7 +76,12 @@ mod native_recovery {
     const IDYES: i32 = 6;
 
     unsafe extern "system" {
-        fn SetWindowsHookExW(id_hook: i32, callback: HookProc, module: Handle, thread_id: u32) -> Handle;
+        fn SetWindowsHookExW(
+            id_hook: i32,
+            callback: HookProc,
+            module: Handle,
+            thread_id: u32,
+        ) -> Handle;
         fn CallNextHookEx(hook: Handle, code: i32, w_param: usize, l_param: isize) -> isize;
         fn GetMessageW(message: *mut Message, hwnd: Handle, min: u32, max: u32) -> i32;
         fn TranslateMessage(message: *const Message) -> i32;
@@ -82,13 +104,23 @@ mod native_recovery {
         if code >= 0 && w_param == WM_RBUTTONUP && CLICKTHROUGH_ENABLED.load(Ordering::Acquire) {
             let mouse = &*(l_param as *const MouseHook);
             let hwnd = pet_window();
-            let mut rect = Rect { left: 0, top: 0, right: 0, bottom: 0 };
+            let mut rect = Rect {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
             let inside = !hwnd.is_null()
                 && GetWindowRect(hwnd, &mut rect) != 0
-                && mouse.point.x >= rect.left && mouse.point.x < rect.right
-                && mouse.point.y >= rect.top && mouse.point.y < rect.bottom;
+                && mouse.point.x >= rect.left
+                && mouse.point.x < rect.right
+                && mouse.point.y >= rect.top
+                && mouse.point.y < rect.bottom;
             if inside {
-                if PROMPT_OPEN.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                if PROMPT_OPEN
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
                     let hwnd_value = hwnd as usize;
                     thread::spawn(move || show_exit_prompt(hwnd_value));
                 }
@@ -109,7 +141,10 @@ mod native_recovery {
             )
         };
         if answer == IDYES {
-            if let Some(window) = APP_HANDLE.get().and_then(|app| app.get_webview_window("main")) {
+            if let Some(window) = APP_HANDLE
+                .get()
+                .and_then(|app| app.get_webview_window("main"))
+            {
                 let _ = set_clickthrough(&window, false);
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -120,8 +155,11 @@ mod native_recovery {
 
     pub(super) fn start() {
         thread::spawn(|| unsafe {
-            let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), GetModuleHandleW(null()), 0);
-            if hook.is_null() { return; }
+            let hook =
+                SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), GetModuleHandleW(null()), 0);
+            if hook.is_null() {
+                return;
+            }
             let mut message: Message = std::mem::zeroed();
             while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
                 TranslateMessage(&message);

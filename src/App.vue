@@ -3,7 +3,7 @@ import { computed, ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
-import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi'
+import { LogicalSize, PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi'
 import { Live2d, type ModelMeta, type PetPose } from './core/live2d'
 import { PetSocket, type WsStatus } from './core/ws'
 import { Chat } from './core/chat'
@@ -60,8 +60,9 @@ const guideVisible = ref(true)
 const reaction = ref<{ text: string; x: number; y: number } | null>(null)
 const chatBubbleVisible = ref(false)
 const bubble = ref<HTMLElement | null>(null)
-const bubblePos = ref({ x: 0, y: 0, side: 'right' as 'left' | 'right' | 'top' | 'bottom', arrowY: 28 })
+const bubblePos = ref({ x: 0, y: 0, width: 236, side: 'right' as 'left' | 'right' | 'top' | 'bottom', arrowY: 28 })
 const bubbleFading = ref(false)
+const bubbleReady = ref(false)
 const zoomLevel = ref(1)
 const uiScale = computed(() => Math.max(0.85, Math.min(1.5, zoomLevel.value)))
 const FACES = ['smile', 'surprise', 'blush', 'wink'] as const
@@ -96,6 +97,7 @@ let zoomFrame: number | undefined
 let pendingZoom: number | null = null
 let zoomBusy = false
 let nativeRegionRequest = 0
+let hideInFlight = false
 
 async function syncNativeHitRegion() {
   if (!pet) return
@@ -163,6 +165,9 @@ onMounted(async () => {
   pet.initApp(canvas.value)
   await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
   await loadModel()
+  await normalizePetWindowSize()
+  pet?.syncRendererSize()
+  if (pet && meta.value) pet.resizeModel(meta.value)
   startIdle()
   startBehavior()
   guideTimer = window.setTimeout(() => (guideVisible.value = false), 8000)
@@ -178,16 +183,21 @@ onMounted(async () => {
     stopWindowMovedListener = await appWindow.onMoved(({ payload }) => {
       desktopPosition = { x: payload.x, y: payload.y }
     })
-    stopPetVisibilityListener = await listen('pet-opened', () => {
+    stopPetVisibilityListener = await listen('pet-opened', async () => {
+      await normalizePetWindowSize()
       status.value = '桌宠已打开'
       lastUserInteraction.value = Date.now()
       nextWanderAt = Date.now() + 12000
       desktopWanderTarget = null
+      pet?.syncRendererSize()
+      if (pet && meta.value) pet.resizeModel(meta.value)
+      startIdle()
       startBehavior()
       startAutonomy()
+      void syncNativeHitRegion()
     })
-    stopPetHiddenListener = await listen('pet-hidden', () => {
-      closeBubble()
+    stopPetHiddenListener = await listen('pet-hidden', async () => {
+      await closeBubble()
       closeApiPanel()
       stopAutonomy()
       stopBehavior()
@@ -210,7 +220,7 @@ function onKey(e: KeyboardEvent) {
   const t = e.target as HTMLElement | null
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
   if (e.key === 'Escape') {
-    closeBubble()
+    void closeBubble()
     closeApiPanel()
   }
 }
@@ -442,9 +452,9 @@ function positionApiPanel() {
   }
 }
 
-function openApiPanel() {
+async function openApiPanel() {
   apiError.value = ''
-  chatBubbleVisible.value = false
+  await closeBubble()
   stopIdle()
   stopBehavior()
   stopAutonomy()
@@ -685,26 +695,183 @@ function onApiAction(event: Event) {
   }
 }
 
+function inDesktopShell() {
+  return !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+}
+
+type BubbleWindowLayout = {
+  side: 'left' | 'right'
+  baseWidth: number
+  baseHeight: number
+  baseX: number
+  baseY: number
+  extraWidth: number
+}
+let bubbleWindowLayout: BubbleWindowLayout | null = null
+let bubbleWindowDesired = false
+let bubbleWindowBusy = false
+let bubbleWindowTransition: Promise<void> = Promise.resolve()
+
+function waitForPaint() {
+  return new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+}
+
+async function normalizePetWindowSize() {
+  if (!inDesktopShell()) return
+  const appWindow = getCurrentWindow()
+  const expectedWidth = Math.round(360 * zoomLevel.value)
+  const expectedHeight = Math.round(600 * zoomLevel.value)
+  const size = await appWindow.outerSize().catch(() => null)
+  if (!size || (size.width <= expectedWidth + 4 && size.height <= expectedHeight + 4)) return
+  await appWindow.setSize(new LogicalSize(expectedWidth, expectedHeight)).catch(() => {})
+  const [position, monitor, nextSize] = await Promise.all([
+    appWindow.outerPosition().catch(() => null),
+    currentMonitor().catch(() => null),
+    appWindow.outerSize().catch(() => null),
+  ])
+  if (!position || !monitor || !nextSize) return
+  const minX = monitor.workArea.position.x
+  const minY = monitor.workArea.position.y
+  const maxX = Math.max(minX, minX + monitor.workArea.size.width - nextSize.width)
+  const maxY = Math.max(minY, minY + monitor.workArea.size.height - nextSize.height)
+  await appWindow.setPosition(new PhysicalPosition(
+    Math.max(minX, Math.min(maxX, position.x)),
+    Math.max(minY, Math.min(maxY, position.y)),
+  )).catch(() => {})
+}
+
+function pinPetToBaseWindow(layout: BubbleWindowLayout) {
+  if (!pet) return
+  // The native window grows only to make room for the bubble. Keep Hiyori in
+  // the original 360×600 visual area instead of re-centering her under it.
+  const dpr = Math.max(1, window.devicePixelRatio || 1)
+  const baseWidth = layout.baseWidth / dpr
+  const baseHeight = layout.baseHeight / dpr
+  const extraWidth = layout.extraWidth / dpr
+  pet.setPosition(
+    layout.side === 'left' ? extraWidth + baseWidth / 2 : baseWidth / 2,
+    baseHeight / 2,
+  )
+}
+
+async function expandBubbleWindowNow() {
+  if (!inDesktopShell() || !pet || !meta.value || bubbleWindowLayout) return
+  const appWindow = getCurrentWindow()
+  const [position, size, monitor] = await Promise.all([
+    appWindow.outerPosition().catch(() => null),
+    appWindow.outerSize().catch(() => null),
+    currentMonitor().catch(() => null),
+  ])
+  if (!position || !size) return
+  const dpr = Math.max(1, window.devicePixelRatio || 1)
+  const extraWidth = Math.ceil((236 * uiScale.value + 28) * dpr)
+  const canExpandRight = !monitor || position.x + size.width + extraWidth <= monitor.workArea.position.x + monitor.workArea.size.width
+  const canExpandLeft = !monitor || position.x - extraWidth >= monitor.workArea.position.x
+  const layout: BubbleWindowLayout = {
+    side: canExpandRight || !canExpandLeft ? 'right' : 'left',
+    baseWidth: size.width,
+    baseHeight: size.height,
+    baseX: position.x,
+    baseY: position.y,
+    extraWidth,
+  }
+  // Mark the transition before awaiting native calls so a rapid close/open cannot start
+  // another expansion from the already-expanded size.
+  bubbleWindowLayout = layout
+  if (layout.side === 'left') await appWindow.setPosition(new PhysicalPosition(position.x - extraWidth, position.y)).catch(() => {})
+  await appWindow.setSize(new PhysicalSize(size.width + extraWidth, size.height)).catch(() => {})
+  await waitForPaint()
+  pet.syncRendererSize()
+  if (meta.value) pet.resizeModel(meta.value)
+  pinPetToBaseWindow(layout)
+  await waitForPaint()
+}
+
+async function restoreBubbleWindowNow(layout: BubbleWindowLayout) {
+  if (!inDesktopShell()) return
+  const appWindow = getCurrentWindow()
+  await appWindow.setSize(new PhysicalSize(layout.baseWidth, layout.baseHeight)).catch(() => {})
+  await appWindow.setPosition(new PhysicalPosition(layout.baseX, layout.baseY)).catch(() => {})
+  await waitForPaint()
+  pet?.syncRendererSize()
+  if (pet && meta.value) pet.resizeModel(meta.value)
+}
+
+async function reconcileBubbleWindow() {
+  if (bubbleWindowBusy) return bubbleWindowTransition
+  bubbleWindowBusy = true
+  bubbleWindowTransition = (async () => {
+    try {
+      while (true) {
+        if (bubbleWindowDesired) {
+          if (!bubbleWindowLayout) await expandBubbleWindowNow()
+          if (!bubbleWindowDesired) continue
+          break
+        }
+        const layout = bubbleWindowLayout
+        if (layout) {
+          await restoreBubbleWindowNow(layout)
+          if (!bubbleWindowDesired && bubbleWindowLayout === layout) bubbleWindowLayout = null
+          continue
+        }
+        await normalizePetWindowSize()
+        break
+      }
+    } finally {
+      bubbleWindowBusy = false
+      void syncNativeHitRegion()
+      if ((bubbleWindowDesired && !bubbleWindowLayout) || (!bubbleWindowDesired && bubbleWindowLayout)) void reconcileBubbleWindow()
+    }
+  })()
+  return bubbleWindowTransition
+}
+
+function requestBubbleWindowState(visible: boolean) {
+  bubbleWindowDesired = visible
+  return reconcileBubbleWindow()
+}
+
+async function prepareBubble() {
+  await nextTick()
+  await requestBubbleWindowState(true)
+  if (!chatBubbleVisible.value) return
+  positionBubble()
+  await waitForPaint()
+  if (!chatBubbleVisible.value) return
+  positionBubble()
+  bubbleReady.value = true
+  void syncNativeHitRegion()
+}
+
 function positionBubble() {
   if (!pet || !chatBubbleVisible.value) return
   const b = pet.getBounds()
-  const width = bubble.value?.offsetWidth || Math.min(236 * uiScale.value, Math.max(120, window.innerWidth - 16))
-  const height = bubble.value?.offsetHeight || Math.min(220 * uiScale.value, window.innerHeight - 16)
+  const maxWidth = Math.min(236 * uiScale.value, Math.max(120, window.innerWidth - 16))
+  const measured = bubble.value?.getBoundingClientRect()
+  const height = measured?.height || Math.min(220 * uiScale.value, window.innerHeight - 16)
   const gap = 12
+  const edge = 8
+  const minSideWidth = Math.min(112 * uiScale.value, maxWidth)
+  const rightSpace = Math.max(0, window.innerWidth - b.x - b.width - gap - edge)
+  const leftSpace = Math.max(0, b.x - gap - edge)
+  let side: 'left' | 'right' | 'top' | 'bottom' = bubbleWindowLayout?.side ?? (rightSpace >= leftSpace ? 'right' : 'left')
+  let width = bubbleWindowLayout
+    ? maxWidth
+    : Math.min(maxWidth, Math.max(minSideWidth, side === 'right' ? rightSpace : leftSpace))
+  if (!bubbleWindowLayout && (side === 'right' ? rightSpace : leftSpace) < minSideWidth) {
+    side = side === 'right' ? 'left' : 'right'
+    width = Math.min(maxWidth, Math.max(72, side === 'right' ? rightSpace : leftSpace))
+  }
+  const topSpace = Math.max(0, b.y - gap - edge)
+  const bottomSpace = Math.max(0, window.innerHeight - b.y - b.height - gap - edge)
+  if (!bubbleWindowLayout && topSpace >= height && topSpace > (side === 'right' ? rightSpace : leftSpace) && topSpace >= bottomSpace) {
+    side = 'top'
+    width = maxWidth
+  } else if (!bubbleWindowLayout && bottomSpace >= height && bottomSpace > (side === 'right' ? rightSpace : leftSpace)) {
+    side = 'bottom'
+    width = maxWidth
+  }
   const headY = b.y + b.height * 0.18
-  const right = window.innerWidth - (b.x + b.width)
-  const left = b.x
-  const top = b.y
-  const bottom = window.innerHeight - (b.y + b.height)
-  const side: 'left' | 'right' | 'top' | 'bottom' = right >= width + gap
-    ? 'right'
-    : left >= width + gap
-      ? 'left'
-      : top >= height + gap
-        ? 'top'
-        : bottom >= height + gap
-          ? 'bottom'
-          : 'top'
   const rawX = side === 'right'
     ? b.x + b.width + gap
     : side === 'left'
@@ -715,11 +882,12 @@ function positionBubble() {
     : side === 'bottom'
       ? b.y + b.height + gap
       : headY - height * 0.42
-  const x = Math.max(8, Math.min(rawX, window.innerWidth - width - 8))
-  const y = Math.max(8, Math.min(rawY, window.innerHeight - height - 8))
+  const x = Math.max(edge, Math.min(rawX, window.innerWidth - width - edge))
+  const y = Math.max(edge, Math.min(rawY, window.innerHeight - height - edge))
   bubblePos.value = {
     x,
     y,
+    width,
     side,
     arrowY: Math.max(18, Math.min(height - 18, headY - y)),
   }
@@ -728,18 +896,24 @@ function openBubble() {
   if (apiPanelVisible.value) return
   cancelBubbleDismiss()
   bubbleFading.value = false
+  if (chatBubbleVisible.value) {
+    positionBubble()
+    armBubbleDismiss()
+    return
+  }
+  bubbleReady.value = false
   chatBubbleVisible.value = true
-  void syncNativeHitRegion()
-  positionBubble()
-  requestAnimationFrame(positionBubble)
+  void prepareBubble()
   armBubbleDismiss()
 }
-function closeBubble() {
+async function closeBubble() {
   cancelBubbleDismiss()
   bubbleFading.value = false
+  bubbleReady.value = false
   chatBubbleVisible.value = false
-  void syncNativeHitRegion()
+  await requestBubbleWindowState(false)
 }
+
 function cancelBubbleDismiss() {
   if (bubbleDismissTimer) clearTimeout(bubbleDismissTimer)
   if (bubbleFadeTimer) clearTimeout(bubbleFadeTimer)
@@ -754,14 +928,21 @@ function armBubbleDismiss() {
     bubbleFadeTimer = window.setTimeout(() => closeBubble(), 500)
   }, 3000)
 }
+
 async function closePet() {
-  closeBubble()
-  closeApiPanel()
-  stopAutonomy()
-  stopBehavior()
-  desktopWanderTarget = null
-  stopIdle()
-  await getCurrentWindow().hide().catch(() => {})
+  if (hideInFlight) return
+  hideInFlight = true
+  try {
+    await closeBubble()
+    closeApiPanel()
+    stopAutonomy()
+    stopBehavior()
+    desktopWanderTarget = null
+    stopIdle()
+    await getCurrentWindow().hide().catch(() => {})
+  } finally {
+    hideInFlight = false
+  }
 }
 
 async function applyZoom(nextZoom: number) {
@@ -860,6 +1041,8 @@ function onContextMenu(e: MouseEvent) {
 
 function onPointerDown(e: PointerEvent) {
   if (e.button !== 0 || !pet) return
+  const hits = pet.hitTest(e.offsetX, e.offsetY)
+  if (!hits.length && !pet.containsPoint(e.offsetX, e.offsetY)) return
   closeBubble()
   desktopWanderTarget = null
   guideVisible.value = false
@@ -1003,8 +1186,8 @@ function onWheel(e: WheelEvent) {
       v-if="chatBubbleVisible"
       ref="bubble"
       class="chat-bubble"
-      :class="[bubblePos.side, { fading: bubbleFading }]"
-      :style="{ left: bubblePos.x + 'px', top: bubblePos.y + 'px', '--bubble-arrow-y': bubblePos.arrowY + 'px' }"
+      :class="[bubblePos.side, { fading: bubbleFading, ready: bubbleReady }]"
+      :style="{ left: bubblePos.x + 'px', top: bubblePos.y + 'px', width: bubblePos.width + 'px', '--bubble-arrow-y': bubblePos.arrowY + 'px' }"
       @pointerdown.stop
       @click.stop
     >
@@ -1051,7 +1234,8 @@ body {
 .chat-bubble {
   position: absolute;
   z-index: 60;
-  width: min(calc(236px * var(--ui-scale)), calc(100vw - 16px));
+  min-width: 0;
+  max-width: calc(100vw - 16px);
   box-sizing: border-box;
   padding: calc(9px * var(--ui-scale));
   border: 1px solid rgba(91, 117, 145, 0.18);
@@ -1061,6 +1245,7 @@ body {
   box-shadow: 0 8px 24px rgba(31, 55, 78, 0.2);
   transition: opacity 0.5s ease, transform 0.5s ease;
 }
+.chat-bubble:not(.ready),
 .chat-bubble.fading {
   opacity: 0;
   transform: translateY(4px);

@@ -21,6 +21,9 @@ pub fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 "show_pet" => {
                     if let Some(w) = app.get_webview_window("main") {
                         let _ = w.show();
+                        let _ = w.unminimize();
+                        let _ = w.set_always_on_top(true);
+                        let _ = w.set_focus();
                         let _ = w.emit("pet-opened", ());
                     }
                 }

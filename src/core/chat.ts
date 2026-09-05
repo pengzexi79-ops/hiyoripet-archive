@@ -9,6 +9,7 @@ export interface ChatHandlers {
   onSubtitle?: (text: string) => void // 增量字幕（delta 累加）
   onTyping?: (typing: boolean) => void
   onError?: (msg: string) => void
+  onApiStatus?: (status: Extract<ServerMsg, { type: 'api-status' }>) => void
 }
 
 export class Chat {
@@ -41,6 +42,9 @@ export class Chat {
         break
       case 'transcription':
         this.handlers.onSubtitle?.(m.text)
+        break
+      case 'api-status':
+        this.handlers.onApiStatus?.(m)
         break
       case 'error':
         this.handlers.onTyping?.(false)

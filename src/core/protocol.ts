@@ -14,6 +14,7 @@ export type ClientMsg =
 
 export type ServerMsg =
   | { type: 'pong' }
+  | { type: 'api-status'; configured: boolean; protocol: string; base_url: string; model: string; source: string; message?: string }
   | { type: 'ai-response'; text: string; audio?: string; volumes?: number[]; emotion: string }
   | { type: 'transcription'; text: string }
   | { type: 'tool-status'; tool: string; status: string }

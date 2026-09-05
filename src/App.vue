@@ -7,6 +7,7 @@ import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi'
 import { Live2d, type ModelMeta } from './core/live2d'
 import { PetSocket, type WsStatus } from './core/ws'
 import { Chat } from './core/chat'
+import { clearApiConfig, fetchApiStatus, saveApiConfig, type ApiProtocol, type ApiStatus } from './core/api'
 
 // 模型放置于 public/models/Hiyori/（Vite 构建时拷进 dist/models/，由 Tauri 资源一并打包）。
 const MODEL_URL = '/models/Hiyori/Hiyori.model3.json'
@@ -28,6 +29,11 @@ const subtitle = ref('')
 const typing = ref(false)
 const inputText = ref('')
 const wsError = ref('')
+const apiStatus = ref<ApiStatus>({ configured: false, protocol: 'openai-compatible', base_url: '', model: '', source: 'local' })
+const apiPanelVisible = ref(false)
+const apiSaving = ref(false)
+const apiError = ref('')
+const apiForm = ref({ protocol: 'openai-compatible' as ApiProtocol, base_url: 'https://api.openai.com/v1', api_key: '', model: 'gpt-4o-mini' })
 // 调试 HUD 默认隐藏：桌宠画面上不显示任何 UI（此前底部白色面板会挡住模型下半身且碍眼）。
 // ── 桌宠交互：仅保留 Hiyori，缩放由滚轮控制 ──
 const guideVisible = ref(true)
@@ -50,6 +56,7 @@ let desktopPosition: { x: number; y: number } | null = null
 let desktopMoveBusy = false
 let rightClickCount = 0
 let stopPetVisibilityListener: UnlistenFn | undefined
+let stopPetHiddenListener: UnlistenFn | undefined
 let press: { pointerId: number; clientX: number; clientY: number; x: number; y: number } | null = null
 let stopClickthroughListener: UnlistenFn | undefined
 let stopWindowMovedListener: UnlistenFn | undefined
@@ -102,6 +109,11 @@ onMounted(async () => {
       desktopWanderTarget = null
       startBehavior()
     })
+    stopPetHiddenListener = await listen('pet-hidden', () => {
+      closeBubble()
+      petLabelVisible.value = false
+      stopBehavior()
+    })
   }
   // M3：建立后端对话通道
   window.addEventListener('resize', positionBubble)
@@ -125,6 +137,8 @@ onBeforeUnmount(() => {
   stopClickthroughListener = undefined
   stopPetVisibilityListener?.()
   stopPetVisibilityListener = undefined
+  stopPetHiddenListener?.()
+  stopPetHiddenListener = undefined
   stopWindowMovedListener?.()
   stopWindowMovedListener = undefined
   window.removeEventListener('resize', positionBubble)
@@ -161,8 +175,60 @@ function connectChat() {
       subtitle.value = ''
       openBubble()
     },
+    onApiStatus: applyApiStatus,
   })
   socket.connect()
+  void fetchApiStatus().then(applyApiStatus).catch(() => {})
+}
+
+function applyApiStatus(next: ApiStatus) {
+  apiStatus.value = next
+  if (next.configured) {
+    apiForm.value.protocol = (next.protocol as ApiProtocol) || 'openai-compatible'
+    apiForm.value.base_url = next.base_url
+    apiForm.value.model = next.model
+  }
+}
+
+function openApiPanel() {
+  apiError.value = ''
+  apiPanelVisible.value = true
+  lastInteraction.value = Date.now()
+}
+
+function closeApiPanel() {
+  apiPanelVisible.value = false
+  apiError.value = ''
+}
+
+async function saveApi() {
+  apiSaving.value = true
+  apiError.value = ''
+  try {
+    applyApiStatus(await saveApiConfig(apiForm.value))
+    closeApiPanel()
+    wsError.value = ''
+    subtitle.value = 'API 已保存，下次对话会使用新配置。'
+  } catch (e) {
+    apiError.value = (e as Error)?.message ?? String(e)
+  } finally {
+    apiSaving.value = false
+  }
+}
+
+async function clearApi() {
+  apiSaving.value = true
+  apiError.value = ''
+  try {
+    applyApiStatus(await clearApiConfig())
+    apiForm.value.api_key = ''
+    closeApiPanel()
+    subtitle.value = '已清除 API，当前使用本地陪伴模式。'
+  } catch (e) {
+    apiError.value = (e as Error)?.message ?? String(e)
+  } finally {
+    apiSaving.value = false
+  }
 }
 
 function sendText() {
@@ -327,6 +393,7 @@ function openBubble() {
 }
 function closeBubble() {
   chatBubbleVisible.value = false
+  apiPanelVisible.value = false
 }
 async function closePet() {
   closeBubble()
@@ -465,6 +532,35 @@ async function toggle() {
       @wheel.prevent.stop="onWheel"
     ></canvas>
 
+    <div v-if="apiPanelVisible" class="api-panel" @pointerdown.stop @click.stop>
+      <div class="panel-head">
+        <strong>连接 AI 对话</strong>
+        <button type="button" class="icon-button" aria-label="关闭 API 设置" @click="closeApiPanel">×</button>
+      </div>
+      <label>协议
+        <select v-model="apiForm.protocol">
+          <option value="openai-compatible">OpenAI / 中转（兼容接口）</option>
+          <option value="anthropic-messages">Anthropic Messages</option>
+          <option value="gemini">Google Gemini</option>
+        </select>
+      </label>
+      <label>接口地址
+        <input v-model="apiForm.base_url" type="url" placeholder="https://api.openai.com/v1" />
+      </label>
+      <label>模型名称
+        <input v-model="apiForm.model" type="text" placeholder="gpt-4o-mini" />
+      </label>
+      <label>API Key
+        <input v-model="apiForm.api_key" type="password" placeholder="已保存可留空" autocomplete="off" />
+      </label>
+      <div class="api-actions">
+        <button type="button" class="primary-action" :disabled="apiSaving" @click="saveApi">保存连接</button>
+        <button type="button" class="secondary-action" :disabled="apiSaving || !apiStatus.configured" @click="clearApi">清除 API</button>
+      </div>
+      <div v-if="apiError" class="bubble-error">⚠ {{ apiError }}</div>
+      <small>支持官方接口，也支持使用相同协议的中转地址。</small>
+    </div>
+
     <div
       v-if="reaction"
       class="reaction"
@@ -480,12 +576,18 @@ async function toggle() {
       @click.stop
     >
       <div class="bubble-head"><strong>pet</strong><button type="button" @click="closeBubble">×</button></div>
+      <button v-if="!apiStatus.configured" type="button" class="api-status" @click="openApiPanel">
+        <span>当前未接入 API</span><span>添加 API ›</span>
+      </button>
+      <button v-else type="button" class="api-status connected" @click="openApiPanel">
+        <span>API 已接入 · {{ apiStatus.model }}</span><span>修改 ›</span>
+      </button>
       <div v-if="subtitle" class="bubble-text">{{ subtitle }}<span v-if="typing" class="caret">▌</span></div>
       <div class="bubble-input-row">
         <input v-model="inputText" type="text" placeholder="和日和聊聊…" @keydown.enter="sendText" />
         <button type="button" @click="sendText">发送</button>
       </div>
-      <button class="dismiss-pet" type="button" @click="closePet">取消宠物</button>
+      <button class="dismiss-pet" type="button" @click="closePet">隐藏桌宠</button>
       <div v-if="wsError" class="bubble-error">⚠ {{ wsError }}</div>
     </div>
     <div v-if="guideVisible" class="guide">点击宠物互动 · 按住拖动 · 滚轮缩放 · 右键开启穿透</div>
@@ -543,6 +645,17 @@ body {
   color: #2f435a;
   box-shadow: 0 8px 24px rgba(31, 55, 78, 0.2);
 }
+.api-panel { position: absolute; z-index: 80; left: 50%; top: 50%; width: 286px; box-sizing: border-box; transform: translate(-50%, -50%); padding: 14px; border: 1px solid rgba(91, 117, 145, 0.2); border-radius: 16px; background: rgba(255, 255, 255, 0.98); color: #2f435a; box-shadow: 0 10px 30px rgba(31, 55, 78, 0.24); }
+.panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.icon-button { border: 0; background: transparent; color: #8493a3; font-size: 20px; cursor: pointer; }
+.api-panel label { display: block; margin: 8px 0; color: #637489; font-size: 11px; }
+.api-panel input, .api-panel select { width: 100%; box-sizing: border-box; margin-top: 4px; padding: 7px 8px; border: 1px solid #d7e0e8; border-radius: 8px; outline: none; color: #2f435a; background: white; }
+.api-actions { display: flex; gap: 8px; margin-top: 10px; }
+.api-actions button { flex: 1; border: 0; border-radius: 9px; padding: 7px 8px; cursor: pointer; }
+.primary-action { background: #6f9bc5; color: white; }
+.secondary-action { background: #eef2f6; color: #637489; }
+.api-actions button:disabled { cursor: wait; opacity: 0.55; }
+.api-panel small { display: block; margin-top: 9px; color: #8a98a6; font-size: 10px; line-height: 1.4; }
 .chat-bubble::after {
   content: '';
   position: absolute;
@@ -573,6 +686,8 @@ body {
   font-size: 13px;
   line-height: 1.45;
 }
+.api-status { display: flex; width: 100%; justify-content: space-between; gap: 8px; margin: 0 0 8px; padding: 6px 8px; border: 1px solid #f0d9a6; border-radius: 8px; background: #fff8e8; color: #9a6d24; font-size: 11px; text-align: left; cursor: pointer; }
+.api-status.connected { border-color: #c7e4d2; background: #f0faf4; color: #3f8058; }
 .bubble-input-row input {
   min-width: 0; flex: 1; padding: 6px 8px; border: 1px solid #d7e0e8; border-radius: 9px; outline: none;
 }

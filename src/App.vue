@@ -572,9 +572,7 @@ function onContextMenu(e: MouseEvent) {
   e.preventDefault()
   e.stopPropagation()
   if (!pet) return
-  const x = e.offsetX
-  const y = e.offsetY
-  if (!pet.containsPoint(x, y) && !pet.hitTest(x, y).length) return
+  // 透明桌宠窗口本身只承载日和；不再用 Live2D 包围盒拦截右键，避免 DPI/缩放后点到身体边缘无响应。
   guideVisible.value = false
   desktopWanderTarget = null
   if (apiPanelVisible.value) closeApiPanel()

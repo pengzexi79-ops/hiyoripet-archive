@@ -192,3 +192,26 @@ GET/POST /api/collaboration
 - 启用多个模型时，`strategy=parallel` 表示并行生成后合并文本；`strategy=fallback` 表示按启用顺序故障转移；未启用协作时只使用当前主模型。
 - 未配置 API 时，WS 在本地回复前发送 `{ type: "api-status", configured: false, message }`；远端调用失败时发送同类型状态并回退本地回复。
 - 前端聊天气泡不显示 API 状态；API 状态、发现结果、连接测试和模型启停只在右键 API 面板中展示。
+
+## C7 识别、导入与场景路由（2026-09-06）
+
+`/api/discover` 返回的模型可以带能力标记；未知能力必须保守标为 `text`，不能伪造视觉能力：
+```json
+{ "id": "model-id", "name": "…", "owned_by": "…", "capabilities": ["text", "vision"] }
+```
+
+模型目录扩展字段：
+```ts
+type ModelCapability = 'text' | 'vision' | 'audio';
+type ModelTask = 'chat' | 'vision' | 'scene';
+interface ModelProfile {
+  id: string; name: string; protocol: string; base_url: string;
+  enabled: boolean; role: 'primary' | 'worker' | 'judge';
+  capabilities: ModelCapability[]; tasks: ModelTask[];
+}
+```
+- 识别结果提供“全部启用并启动”和“取消本次识别”；前者导入识别到的模型、启用协作并立即成为运行目录，后者只撤销本次未保存的识别结果。
+- API 面板支持导入 JSON 模型配置；导入只接受 `models` 数组和可选 `collaboration`，API key 仍只在本地 DPAPI 加密保存。
+- WebSocket `text-input` 可带 `image`（data URL）和 `task`：`chat`、`vision`、`scene`。带图片时前端必须使用 `vision`。
+- OpenAI-compatible、Anthropic Messages、Gemini 适配器都要把图片转为各自官方请求格式；不支持图片的模型不能被路由到视觉任务。
+- 多模型协作按任务路由：只选 `enabled=true` 且声明该 task 的模型；无匹配时才回退到全部启用模型。`fallback` 按主模型/协作顺序尝试，`parallel` 并行汇总。

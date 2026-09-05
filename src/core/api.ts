@@ -43,10 +43,15 @@ export async function clearApiConfig(): Promise<ApiStatus> {
   return (await response.json()) as ApiStatus
 }
 
+export type ModelCapability = 'text' | 'vision' | 'audio'
+export type ModelTask = 'chat' | 'vision' | 'scene'
+
 export interface DiscoveredModel {
   id: string
   name: string
   owned_by?: string
+  capabilities?: ModelCapability[]
+  tasks?: ModelTask[]
 }
 
 export interface ModelProfile {
@@ -56,6 +61,8 @@ export interface ModelProfile {
   base_url: string
   enabled: boolean
   role: 'primary' | 'worker' | 'judge' | string
+  capabilities: ModelCapability[]
+  tasks: ModelTask[]
 }
 
 export interface CollaborationSettings {

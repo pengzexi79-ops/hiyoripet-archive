@@ -8,7 +8,7 @@ export type ClientMsg =
   | { type: 'ping' }
   | { type: 'audio-chunk'; data: number[] } // Float32 采样（16000Hz），M3 后续
   | { type: 'audio-end' }
-  | { type: 'text-input'; text: string; image?: string }
+  | { type: 'text-input'; text: string; image?: string; task?: 'chat' | 'vision' | 'scene' }
   | { type: 'interrupt' }
   | { type: 'switch-character'; confUid: string }
 

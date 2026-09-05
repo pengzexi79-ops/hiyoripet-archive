@@ -26,10 +26,10 @@ export class Chat {
     this.socket.onServer((m) => this.handle(m))
   }
 
-  sendText(text: string): void {
+  sendText(text: string, image?: string, task?: 'chat' | 'vision' | 'scene'): void {
     this.subtitleBuf = ''
     this.handlers.onTyping?.(true)
-    this.socket.send({ type: 'text-input', text })
+    this.socket.send({ type: 'text-input', text, ...(image ? { image } : {}), ...(task ? { task } : {}) })
   }
 
   private handle(m: ServerMsg): void {

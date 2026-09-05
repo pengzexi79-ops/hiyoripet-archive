@@ -213,3 +213,4 @@
 - ✅ 重复启动保持单个 `HiyoriPet.exe`，不新增桌宠或 sidecar；退出后应用、两个 PyInstaller 进程和 8000 端口均释放。
 - ✅ 门禁：TypeScript、Vite、Python `compileall`、GNU `cargo check`、Tauri GNU Release NSIS 全部通过；仅保留已知非致命 MinGW `.rsrc merge failure: multiple non-default manifests` 警告。
 - ✅ 最新交付物已覆盖：`D:/codex/pet/release/HiyoriPet/HiyoriPet.exe`、便携 ZIP、NSIS 安装包；桌面快捷方式仍指向 Release 可执行文件并使用日和图标。
+- SHA-256（2026-09-05 最终构建）：`HiyoriPet.exe BB463C9BF0BF1D680629561AF8394CAD2B6DC0E3BACD1C4CA0EA4F8E0C4CD301`；`pet-backend.exe 7E32C9CF6E9EF204CF659099B67C5B6763848CCD48CE5B85AC4513B74F388051`；`portable.zip EF1E733C5C66CE5F0D906B33F201F5150781707588377B51BC859D4D34D367BB`；`setup.exe 4874EF23DD6413CFBADE72B8CECBBBF785154634A1266FF87CE6B94268AA1B6F`。

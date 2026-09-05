@@ -401,7 +401,7 @@ function onApiAction(event: Event) {
 function positionBubble() {
   if (!pet) return
   const b = pet.getBounds()
-  const width = 236
+  const width = Math.min(236, Math.max(120, window.innerWidth - 16))
   const height = 142
   const gap = 12
   const right = window.innerWidth - (b.x + b.width)
@@ -645,7 +645,7 @@ body {
 .chat-bubble {
   position: absolute;
   z-index: 60;
-  width: 236px;
+  width: min(236px, calc(100vw - 16px));
   box-sizing: border-box;
   padding: 9px;
   border: 1px solid rgba(91, 117, 145, 0.18);
@@ -654,7 +654,7 @@ body {
   color: #2f435a;
   box-shadow: 0 8px 24px rgba(31, 55, 78, 0.2);
 }
-.api-panel { position: absolute; z-index: 80; left: 50%; top: 50%; width: 286px; box-sizing: border-box; transform: translate(-50%, -50%); padding: 14px; border: 1px solid rgba(91, 117, 145, 0.2); border-radius: 16px; background: rgba(255, 255, 255, 0.98); color: #2f435a; box-shadow: 0 10px 30px rgba(31, 55, 78, 0.24); }
+.api-panel { position: absolute; z-index: 80; left: 50%; top: 50%; width: min(286px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow: auto; box-sizing: border-box; transform: translate(-50%, -50%); padding: 14px; border: 1px solid rgba(91, 117, 145, 0.2); border-radius: 16px; background: rgba(255, 255, 255, 0.98); color: #2f435a; box-shadow: 0 10px 30px rgba(31, 55, 78, 0.24); }
 .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .icon-button { border: 0; background: transparent; color: #8493a3; font-size: 20px; cursor: pointer; }
 .api-panel label { display: block; margin: 8px 0; color: #637489; font-size: 11px; }

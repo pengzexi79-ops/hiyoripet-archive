@@ -67,11 +67,26 @@ class ServiceContext:
         self._load_llm()
         return self.api_status()
 
+    def _resolve_api_key(self, protocol: str, base_url: str, model: str = "", provided: str = "") -> str:
+        if provided.strip():
+            return provided.strip()
+        normalized = base_url.strip().rstrip("/")
+        if self.user_api and self.user_api.protocol == protocol and self.user_api.base_url.rstrip("/") == normalized and (not model or self.user_api.model == model):
+            return self.user_api.api_key
+        for profile in self.catalog.runtime_profiles():
+            if profile.protocol == protocol and profile.base_url.rstrip("/") == normalized and (not model or profile.id == model):
+                return profile.api_key
+        return ""
+
     def public_models(self) -> list[dict]:
         return self.catalog.public_models()
 
     def save_models(self, items: list[dict]) -> list[dict]:
-        return self.catalog.save_models(items)
+        prepared = [
+            {**item, "api_key": self._resolve_api_key(item.get("protocol", ""), item.get("base_url", ""), item.get("id", ""), item.get("api_key", ""))}
+            for item in items
+        ]
+        return self.catalog.save_models(prepared)
 
     def collaboration(self) -> dict:
         return self.catalog.collaboration()
@@ -80,14 +95,17 @@ class ServiceContext:
         return self.catalog.save_collaboration(value)
 
     async def discover(self, protocol: str, base_url: str, api_key: str) -> dict:
-        return await discover_models(protocol, base_url, api_key)
+        key = self._resolve_api_key(protocol, base_url, provided=api_key)
+        return await discover_models(protocol, base_url, key)
 
     async def test_connection(self, protocol: str, base_url: str, api_key: str, model: str) -> dict:
-        return await test_connection(protocol, base_url, api_key, model)
+        key = self._resolve_api_key(protocol, base_url, model, api_key)
+        return await test_connection(protocol, base_url, key, model)
 
     async def _collect(self, profile: ModelProfile, messages: list[dict]) -> str:
         chunks: list[str] = []
-        async for chunk in UniversalLLM(ApiSettings(profile.protocol, profile.base_url, profile.api_key, profile.id)).chat_iter(messages):
+        settings = ApiSettings(profile.protocol, profile.base_url, profile.api_key, profile.id)
+        async for chunk in UniversalLLM(settings).chat_iter(messages):
             chunks.append(chunk)
         answer = "".join(chunks).strip()
         if not answer:

@@ -152,6 +152,13 @@ Health:          GET http://127.0.0.1:8000/health
 - 第二次启动要唤醒既有窗口并触发 `pet-opened`，不得再启动第二个后端 sidecar。
 - 托盘必须同时提供“显示宠物”和“隐藏宠物”；聊天气泡内保留明确的“隐藏桌宠”入口。
 
+### 桌宠窗口与聊天气泡
+- 右键打开 API 面板后，桌宠窗口位置和游走目标冻结；关闭面板后恢复行为计时。
+- 桌面游走边界使用当前显示器 `workArea` 与窗口外部尺寸计算，目标位置必须保证整个窗口留在工作区内。
+- 滚轮缩放使用单一待处理目标与 `requestAnimationFrame` 合帧；同一帧最多提交一次原生窗口尺寸更新，缩放期间保持人物 contain 可见。
+- 聊天气泡只包含日和的对话、输入和隐藏桌宠命令，不显示 API 状态或 API 管理按钮。
+- 气泡锚定模型头部上方，按左右剩余空间选择方向，并限制在窗口视口内；打开约 3 秒后缓慢淡出。输入、发送、回复流式更新期间保持可见。
+
 ### API 配置
 本地后端提供：
 ```text
@@ -159,9 +166,21 @@ GET  /api/config  -> { configured, protocol, base_url, model, source }
 POST /api/config  <- { protocol, base_url, api_key, model }
                    -> { configured, protocol, base_url, model, source }
 DELETE /api/config -> 清除用户配置并回到本地模式
+POST /api/discover <- { protocol, base_url, api_key }
+                    -> { connected, protocol, base_url, models: [{ id, name, owned_by? }], error? }
+POST /api/test     <- { protocol, base_url, api_key, model }
+                    -> { connected, latency_ms?, model, error? }
+GET  /api/models   -> { models: [{ id, name, protocol, base_url, enabled, role }] }
+POST /api/models  <- { models: [{ id, name, protocol, base_url, api_key?, enabled, role }] }
+                    -> { models: [{ id, name, protocol, base_url, enabled, role }] }
+GET/POST /api/collaboration
+                    -> { enabled, strategy, judge_model_id?, model_ids[] }
 ```
 - `protocol` 支持 `openai-compatible`、`anthropic-messages`、`gemini`；`base_url` 与 `model` 由用户填写，不绑定供应商名单，兼容对应协议的官方地址及中转地址。
 - API key 不回传前端、不进仓库；Windows 发布版使用当前用户 DPAPI 加密后写入 `%APPDATA%/HiyoriPet/api.json`。
-- 保存配置不自动发起计费测试；下一次真实对话才调用远端接口。
+- `/api/discover` 优先使用协议对应的模型列表端点，不发送生成请求；不支持发现的中转必须返回可读错误，不伪造模型列表。
+- `/api/test` 是显式用户操作，可能产生一次计费请求；前端在按钮旁明确提示，后端不记录或返回密钥。
+- API key 不回传前端、不进仓库；Windows 发布版使用当前用户 DPAPI 加密后写入 `%APPDATA%/HiyoriPet/api.json`。多模型配置同样只保存加密密钥。
+- 启用多个模型时，`strategy=parallel` 表示并行生成后合并文本；`strategy=fallback` 表示按启用顺序故障转移；未启用协作时只使用当前主模型。
 - 未配置 API 时，WS 在本地回复前发送 `{ type: "api-status", configured: false, message }`；远端调用失败时发送同类型状态并回退本地回复。
-- 前端聊天气泡必须直接显示“当前未接入 API”及“添加 API”按钮；配置面板可保存、修改或清除配置。
+- 前端聊天气泡不显示 API 状态；API 状态、发现结果、连接测试和模型启停只在右键 API 面板中展示。

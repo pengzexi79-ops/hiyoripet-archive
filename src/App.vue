@@ -51,7 +51,8 @@ const guideVisible = ref(true)
 const reaction = ref<{ text: string; x: number; y: number } | null>(null)
 const chatBubbleVisible = ref(false)
 const bubble = ref<HTMLElement | null>(null)
-const bubblePos = ref({ x: 0, y: 0, side: 'right' as 'left' | 'right' })
+const bubblePos = ref({ x: 0, y: 0, side: 'right' as 'left' | 'right' | 'top', arrowY: 28 })
+const bubbleFading = ref(false)
 const zoomLevel = ref(1)
 const uiScale = computed(() => Math.max(0.85, Math.min(1.5, zoomLevel.value)))
 
@@ -75,6 +76,11 @@ let stopPetVisibilityListener: UnlistenFn | undefined
 let stopPetHiddenListener: UnlistenFn | undefined
 let press: { pointerId: number; clientX: number; clientY: number; x: number; y: number } | null = null
 let stopWindowMovedListener: UnlistenFn | undefined
+let bubbleDismissTimer: number | undefined
+let bubbleFadeTimer: number | undefined
+let zoomFrame: number | undefined
+let pendingZoom: number | null = null
+let zoomBusy = false
 
 async function loadModel() {
   if (!pet) return
@@ -180,6 +186,10 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', positionApiPanel)
   if (autonomyTimer) clearTimeout(autonomyTimer)
   autonomyTimer = undefined
+  cancelBubbleDismiss()
+  if (zoomFrame !== undefined) cancelAnimationFrame(zoomFrame)
+  zoomFrame = undefined
+  pendingZoom = null
   window.removeEventListener('pet-api-action', onApiAction as EventListener)
   delete (window as Window & { petApi?: unknown }).petApi
   if (guideTimer) clearTimeout(guideTimer)
@@ -207,7 +217,11 @@ function connectChat() {
       openBubble()
       requestAnimationFrame(positionBubble)
     },
-    onTyping: (b) => (typing.value = b),
+    onTyping: (b) => {
+      typing.value = b
+      if (b) cancelBubbleDismiss()
+      else armBubbleDismiss()
+    },
     onError: (m) => {
       wsError.value = m
       subtitle.value = ''
@@ -293,6 +307,7 @@ function positionApiPanel() {
 function openApiPanel() {
   apiError.value = ''
   chatBubbleVisible.value = false
+  stopBehavior()
   apiPanelVisible.value = true
   lastUserInteraction.value = Date.now()
   positionApiPanel()
@@ -302,6 +317,7 @@ function openApiPanel() {
 function closeApiPanel() {
   apiPanelVisible.value = false
   apiError.value = ''
+  if (pet) startBehavior()
 }
 
 function selectApiPreset() {
@@ -393,6 +409,10 @@ async function stepDesktopWander() {
       const minY = monitor.workArea.position.y
       const maxX = Math.max(minX, minX + monitor.workArea.size.width - size.width)
       const maxY = Math.max(minY, minY + monitor.workArea.size.height - size.height)
+      desktopPosition = {
+        x: Math.max(minX, Math.min(maxX, desktopPosition.x)),
+        y: Math.max(minY, Math.min(maxY, desktopPosition.y)),
+      }
       desktopWanderTarget = {
         x: Math.round(minX + Math.random() * Math.max(1, maxX - minX)),
         y: Math.round(minY + Math.random() * Math.max(1, maxY - minY)),
@@ -409,9 +429,16 @@ async function stepDesktopWander() {
       return
     }
     const step = Math.min(3, distance)
+    const monitor = await currentMonitor()
+    const size = await appWindow.outerSize()
+    if (!monitor) return
+    const minX = monitor.workArea.position.x
+    const minY = monitor.workArea.position.y
+    const maxX = Math.max(minX, minX + monitor.workArea.size.width - size.width)
+    const maxY = Math.max(minY, minY + monitor.workArea.size.height - size.height)
     desktopPosition = {
-      x: Math.round(desktopPosition.x + dx / distance * step),
-      y: Math.round(desktopPosition.y + dy / distance * step),
+      x: Math.max(minX, Math.min(maxX, Math.round(desktopPosition.x + dx / distance * step))),
+      y: Math.max(minY, Math.min(maxY, Math.round(desktopPosition.y + dy / distance * step))),
     }
     await appWindow.setPosition(new PhysicalPosition(desktopPosition.x, desktopPosition.y))
   } finally {
@@ -494,23 +521,50 @@ function positionBubble() {
   const width = bubble.value?.offsetWidth || Math.min(236 * uiScale.value, Math.max(120, window.innerWidth - 16))
   const height = bubble.value?.offsetHeight || Math.min(220 * uiScale.value, window.innerHeight - 16)
   const gap = 12
+  const headY = b.y + b.height * 0.18
   const right = window.innerWidth - (b.x + b.width)
-  const side = right >= width + gap ? 'right' : 'left'
-  const rawX = side === 'right' ? b.x + b.width + gap : b.x - width - gap
+  const left = b.x
+  const side = right >= width + gap ? 'right' : left >= width + gap ? 'left' : 'top'
+  const rawX = side === 'right'
+    ? b.x + b.width + gap
+    : side === 'left'
+      ? b.x - width - gap
+      : b.x + b.width / 2 - width / 2
+  const rawY = side === 'top' ? b.y - height - gap : headY - height * 0.42
   bubblePos.value = {
     x: Math.max(8, Math.min(rawX, window.innerWidth - width - 8)),
-    y: Math.max(8, Math.min(b.y + b.height * 0.2, window.innerHeight - height - 8)),
+    y: Math.max(8, Math.min(rawY, window.innerHeight - height - 8)),
     side,
+    arrowY: Math.max(18, Math.min(height - 18, headY - Math.max(8, Math.min(rawY, window.innerHeight - height - 8)))),
   }
 }
 function openBubble() {
   apiPanelVisible.value = false
+  cancelBubbleDismiss()
+  bubbleFading.value = false
   chatBubbleVisible.value = true
   positionBubble()
   requestAnimationFrame(positionBubble)
+  armBubbleDismiss()
 }
 function closeBubble() {
+  cancelBubbleDismiss()
+  bubbleFading.value = false
   chatBubbleVisible.value = false
+}
+function cancelBubbleDismiss() {
+  if (bubbleDismissTimer) clearTimeout(bubbleDismissTimer)
+  if (bubbleFadeTimer) clearTimeout(bubbleFadeTimer)
+  bubbleDismissTimer = undefined
+  bubbleFadeTimer = undefined
+}
+function armBubbleDismiss() {
+  cancelBubbleDismiss()
+  if (!chatBubbleVisible.value || typing.value) return
+  bubbleDismissTimer = window.setTimeout(() => {
+    bubbleFading.value = true
+    bubbleFadeTimer = window.setTimeout(() => closeBubble(), 500)
+  }, 3000)
 }
 async function closePet() {
   closeBubble()
@@ -521,7 +575,7 @@ async function closePet() {
   await getCurrentWindow().hide().catch(() => {})
 }
 
-async function resizeForZoom(nextZoom: number) {
+async function applyZoom(nextZoom: number) {
   if (!pet) return
   zoomLevel.value = Math.max(0.65, Math.min(2.2, nextZoom))
   const targetWidth = Math.round(360 * zoomLevel.value)
@@ -533,7 +587,7 @@ async function resizeForZoom(nextZoom: number) {
       appWindow.outerSize().catch(() => null),
     ])
     await appWindow.setSize(new LogicalSize(targetWidth, targetHeight)).catch(() => {})
-    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
     pet.setZoom(zoomLevel.value)
     if (meta.value) pet.resizeModel(meta.value)
     if (beforePosition && beforeSize) {
@@ -552,6 +606,26 @@ async function resizeForZoom(nextZoom: number) {
   }
   positionBubble()
   positionApiPanel()
+  if (pendingZoom !== null) scheduleZoomFlush()
+}
+function scheduleZoomFlush() {
+  if (zoomFrame !== undefined) return
+  zoomFrame = requestAnimationFrame(() => {
+    zoomFrame = undefined
+    if (zoomBusy || pendingZoom === null) return
+    const next = pendingZoom
+    pendingZoom = null
+    zoomBusy = true
+    void applyZoom(next).finally(() => {
+      zoomBusy = false
+      if (pendingZoom !== null) scheduleZoomFlush()
+    })
+  })
+}
+function queueZoom(nextZoom: number) {
+  pendingZoom = Math.max(0.65, Math.min(2.2, nextZoom))
+  zoomLevel.value = pendingZoom
+  scheduleZoomFlush()
 }
 
 function interactAt(x: number, y: number) {
@@ -614,7 +688,7 @@ function onPointerCancel(e: PointerEvent) {
 }
 
 function onWheel(e: WheelEvent) {
-  void resizeForZoom(zoomLevel.value * (e.deltaY > 0 ? 0.9 : 1.1))
+  queueZoom(zoomLevel.value * (e.deltaY > 0 ? 0.9 : 1.1))
   lastUserInteraction.value = Date.now()
   maybeAutonomousTalk('你调整了我的大小')
 }
@@ -687,18 +761,12 @@ function onWheel(e: WheelEvent) {
       v-if="chatBubbleVisible"
       ref="bubble"
       class="chat-bubble"
-      :class="bubblePos.side"
+      :class="[bubblePos.side, { fading: bubbleFading }]"
       :style="{ left: bubblePos.x + 'px', top: bubblePos.y + 'px' }"
       @pointerdown.stop
       @click.stop
     >
       <div class="bubble-head"><strong>日和</strong><button type="button" @click="closeBubble">×</button></div>
-      <button v-if="!apiStatus.configured" type="button" class="api-status" @click="openApiPanel">
-        <span>当前未接入 API</span><span>添加 API ›</span>
-      </button>
-      <button v-else type="button" class="api-status connected" @click="openApiPanel">
-        <span>API 已接入 · {{ apiStatus.model }}</span><span>修改 ›</span>
-      </button>
       <div v-if="subtitle" class="bubble-text">{{ subtitle }}<span v-if="typing" class="caret">▌</span></div>
       <div class="bubble-input-row">
         <input v-model="inputText" type="text" placeholder="和日和聊聊…" @keydown.enter="sendText" />
@@ -749,6 +817,12 @@ body {
   background: rgba(255, 255, 255, 0.96);
   color: #2f435a;
   box-shadow: 0 8px 24px rgba(31, 55, 78, 0.2);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+.chat-bubble.fading {
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
 }
 .popup-scrim { position: absolute; inset: 0; z-index: 70; background: transparent; }
 .api-panel { position: absolute; z-index: 80; width: min(calc(286px * var(--ui-scale)), calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow: auto; box-sizing: border-box; padding: calc(14px * var(--ui-scale)); border: 1px solid rgba(91, 117, 145, 0.2); border-radius: calc(16px * var(--ui-scale)); background: rgba(255, 255, 255, 0.98); color: #2f435a; box-shadow: 0 10px 30px rgba(31, 55, 78, 0.24); }
@@ -778,6 +852,7 @@ body {
 }
 .chat-bubble.right::after { left: -7px; }
 .chat-bubble.left::after { right: -7px; transform: rotate(225deg); }
+.chat-bubble.top::after { left: calc(50% - 6px); top: auto; bottom: -7px; transform: rotate(315deg); }
 .bubble-head, .bubble-input-row {
   display: flex;
   align-items: center;
@@ -795,8 +870,6 @@ body {
   font-size: 13px;
   line-height: 1.45;
 }
-.api-status { display: flex; width: 100%; justify-content: space-between; gap: 8px; margin: 0 0 8px; padding: 6px 8px; border: 1px solid #f0d9a6; border-radius: 8px; background: #fff8e8; color: #9a6d24; font-size: 11px; text-align: left; cursor: pointer; }
-.api-status.connected { border-color: #c7e4d2; background: #f0faf4; color: #3f8058; }
 .bubble-input-row input {
   min-width: 0; flex: 1; padding: calc(6px * var(--ui-scale)) calc(8px * var(--ui-scale)); border: 1px solid #d7e0e8; border-radius: 9px; outline: none;
 }

@@ -8,3 +8,4 @@ pyyaml>=6.0
 python-multipart>=0.0.9
 numpy>=1.26
 websockets>=12.0   # 仅用于本地冒烟测试（test_ws_smoke.py）
+aiohttp>=3.9  # Anthropic/Gemini native HTTP adapters

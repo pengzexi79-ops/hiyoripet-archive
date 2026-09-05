@@ -1,22 +1,23 @@
-# backend/server.py
-# FastAPI + WebSocket conversation service (contract: docs/CONTRACTS.md C2).
+# FastAPI + WebSocket conversation service (contracts C2/C6).
 import json
 from datetime import datetime
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from service_context import get_service_context
 
 app = FastAPI(title="pet-backend")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 DEFAULT_SYSTEM = "你是桌面上的一只高互动陪伴桌宠，性格活泼、话少而精。用简体中文，每次回复不超过 60 字。"
+
+
+class ApiConfigInput(BaseModel):
+    protocol: str
+    base_url: str
+    api_key: str = ""
+    model: str
 
 
 def _system_prompt() -> str:
@@ -24,7 +25,6 @@ def _system_prompt() -> str:
 
 
 def _local_reply(text: str, degraded: bool = False) -> str:
-    """No-key/offline fallback so the packaged pet remains conversational."""
     normalized = text.strip().lower()
     if any(word in normalized for word in ("你好", "嗨", "hello", "hi")):
         return "你好呀，我是日和～今天也会在桌面上陪着你。"
@@ -35,70 +35,91 @@ def _local_reply(text: str, degraded: bool = False) -> str:
     if any(word in normalized for word in ("谢谢", "再见", "晚安")):
         return "不用客气～我就在桌面边上，想我时再点一下。"
     if degraded:
-        return "联网对话暂时不可用，我先用本地陪伴模式陪你。再点点我，也许会有新动作哦～"
-    return "我听见啦～现在是本地陪伴模式；配置 FOXTOKEN_KEY 后，我还能回答更多问题。"
+        return "API 暂时连接失败，我先用本地陪伴模式陪你。点“修改 API”可检查配置。"
+    return "我听见啦～现在是本地陪伴模式。点聊天框里的“添加 API”就能接入更多模型。"
 
 
-def _llm_available(sc) -> bool:
-    cfg = sc.config.llm_configs.get(sc.config.default_llm)
-    return bool(cfg and cfg.api_key)
+def _status_message(status: dict, healthy: bool | None = None) -> dict:
+    data = {"type": "api-status", **status}
+    if not status["configured"]:
+        data["message"] = "当前未接入 API，正在使用本地陪伴模式。"
+    elif healthy is False:
+        data["message"] = "API 调用失败，请检查接口地址、密钥和模型名称。"
+    return data
 
 
 @app.get("/health")
 async def health():
-    sc = get_service_context()
-    return {"status": "ok", "llm": "remote" if _llm_available(sc) else "local"}
+    status = get_service_context().api_status()
+    return {"status": "ok", "llm": "remote" if status["configured"] else "local"}
+
+
+@app.get("/api/config")
+async def get_api_config():
+    return get_service_context().api_status()
+
+
+@app.post("/api/config")
+async def save_api_config(payload: ApiConfigInput):
+    try:
+        return get_service_context().save_api(payload.protocol, payload.base_url, payload.api_key, payload.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/config")
+async def delete_api_config():
+    return get_service_context().clear_api()
 
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
     sc = get_service_context()
+    await ws.send_json(_status_message(sc.api_status()))
     try:
         while True:
-            raw = await ws.receive_text()
             try:
-                msg = json.loads(raw)
-            except Exception:
+                msg = json.loads(await ws.receive_text())
+            except json.JSONDecodeError:
                 await ws.send_json({"type": "error", "message": "JSON 解析失败"})
                 continue
-
             mtype = msg.get("type")
             if mtype == "ping":
                 await ws.send_json({"type": "pong"})
             elif mtype == "text-input":
                 await _handle_text(ws, sc, (msg.get("text") or "").strip())
             elif mtype == "audio-end":
-                await ws.send_json(
-                    {"type": "error", "message": "本地 ASR 暂未启用，请先直接输入文字。"}
-                )
-            elif mtype == "interrupt":
-                pass
-            else:
+                await ws.send_json({"type": "error", "message": "本地 ASR 暂未启用，请先直接输入文字。"})
+            elif mtype != "interrupt":
                 await ws.send_json({"type": "error", "message": f"未知消息类型: {mtype}"})
     except WebSocketDisconnect:
         pass
 
 
-async def _handle_text(ws, sc, text: str):
+async def _handle_text(ws: WebSocket, sc, text: str):
     if not text:
         await ws.send_json({"type": "error", "message": "请输入想说的话"})
         return
     sc.history.append({"role": "user", "content": text})
-    if not _llm_available(sc):
+    status = sc.api_status()
+    if not status["configured"]:
+        await ws.send_json(_status_message(status))
         reply = _local_reply(text)
         sc.history.append({"role": "assistant", "content": reply})
         await ws.send_json({"type": "ai-response", "text": reply, "emotion": "normal"})
         return
-
     messages = [{"role": "system", "content": _system_prompt()}] + sc.history[-20:]
     try:
         acc = ""
         async for piece in sc.llm.chat_iter(messages):
             acc += piece
             await ws.send_json({"type": "ai-response", "text": piece, "emotion": "normal"})
+        if not acc:
+            raise RuntimeError("empty API response")
         sc.history.append({"role": "assistant", "content": acc})
     except Exception:
+        await ws.send_json(_status_message(status, healthy=False))
         reply = _local_reply(text, degraded=True)
         sc.history.append({"role": "assistant", "content": reply})
         await ws.send_json({"type": "ai-response", "text": reply, "emotion": "normal"})

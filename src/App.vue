@@ -422,7 +422,7 @@ async function stepDesktopWander() {
 function startBehavior() {
   stopBehavior()
   behaviorTimer = window.setInterval(() => {
-    if (!pet || chatBubbleVisible.value || press) return
+    if (!pet || chatBubbleVisible.value || apiPanelVisible.value || press) return
     if (Date.now() - lastUserInteraction.value < 12000) return
     if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
       void stepDesktopWander()
@@ -645,7 +645,7 @@ function onWheel(e: WheelEvent) {
       :style="{ left: apiPanelPos.x + 'px', top: apiPanelPos.y + 'px' }"
       @pointerdown.stop
       @click.stop
-       @contextmenu.prevent.stop
+       @contextmenu.prevent="closeApiPanel"
     >
       <div class="panel-head">
         <div><strong>连接 AI 对话</strong><div class="panel-subtitle">右键宠物可再次打开 / 关闭</div></div>

@@ -32,7 +32,20 @@ const apiStatus = ref<ApiStatus>({ configured: false, protocol: 'openai-compatib
 const apiPanelVisible = ref(false)
 const apiSaving = ref(false)
 const apiError = ref('')
-const apiForm = ref({ protocol: 'openai-compatible' as ApiProtocol, base_url: 'https://api.openai.com/v1', api_key: '', model: 'gpt-4o-mini' })
+type ApiPreset = { id: string; label: string; protocol: ApiProtocol; baseUrl: string }
+const API_PRESETS: ApiPreset[] = [
+  { id: 'custom', label: '自定义接口（其他官方 / 中转）', protocol: 'openai-compatible', baseUrl: '' },
+  { id: 'openai', label: '国外 · OpenAI', protocol: 'openai-compatible', baseUrl: 'https://api.openai.com/v1' },
+  { id: 'anthropic', label: '国外 · Anthropic Claude', protocol: 'anthropic-messages', baseUrl: 'https://api.anthropic.com' },
+  { id: 'gemini', label: '国外 · Google Gemini', protocol: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com' },
+  { id: 'openrouter', label: '国外 / 聚合 · OpenRouter', protocol: 'openai-compatible', baseUrl: 'https://openrouter.ai/api/v1' },
+  { id: 'deepseek', label: '国内 · DeepSeek', protocol: 'openai-compatible', baseUrl: 'https://api.deepseek.com' },
+  { id: 'dashscope', label: '国内 · 通义千问 / 百炼', protocol: 'openai-compatible', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+  { id: 'zhipu', label: '国内 · 智谱 GLM', protocol: 'openai-compatible', baseUrl: 'https://open.bigmodel.cn/api/paas/v4' },
+  { id: 'siliconflow', label: '国内 / 聚合 · 硅基流动', protocol: 'openai-compatible', baseUrl: 'https://api.siliconflow.cn/v1' },
+]
+const apiPreset = ref('custom')
+const apiForm = ref({ protocol: 'openai-compatible' as ApiProtocol, base_url: '', api_key: '', model: '' })
 // 调试 HUD 默认隐藏：桌宠画面上不显示任何 UI（此前底部白色面板会挡住模型下半身且碍眼）。
 // ── 桌宠交互：仅保留 Hiyori，缩放由滚轮控制 ──
 const guideVisible = ref(true)
@@ -185,6 +198,8 @@ function applyApiStatus(next: ApiStatus) {
     apiForm.value.protocol = (next.protocol as ApiProtocol) || 'openai-compatible'
     apiForm.value.base_url = next.base_url
     apiForm.value.model = next.model
+    const normalized = next.base_url.replace(/\/$/, '')
+    apiPreset.value = API_PRESETS.find((preset) => preset.baseUrl === normalized)?.id ?? 'custom'
   }
 }
 
@@ -197,6 +212,14 @@ function openApiPanel() {
 function closeApiPanel() {
   apiPanelVisible.value = false
   apiError.value = ''
+}
+
+function selectApiPreset() {
+  const preset = API_PRESETS.find((item) => item.id === apiPreset.value)
+  if (!preset) return
+  apiForm.value.protocol = preset.protocol
+  apiForm.value.base_url = preset.baseUrl
+  apiForm.value.model = ''
 }
 
 async function saveApi() {
@@ -532,6 +555,11 @@ async function toggle() {
         <strong>连接 AI 对话</strong>
         <button type="button" class="icon-button" aria-label="关闭 API 设置" @click="closeApiPanel">×</button>
       </div>
+      <label>服务 / 模型来源
+        <select v-model="apiPreset" @change="selectApiPreset">
+          <option v-for="preset in API_PRESETS" :key="preset.id" :value="preset.id">{{ preset.label }}</option>
+        </select>
+      </label>
       <label>协议
         <select v-model="apiForm.protocol">
           <option value="openai-compatible">OpenAI / 中转（兼容接口）</option>
@@ -543,7 +571,7 @@ async function toggle() {
         <input v-model="apiForm.base_url" type="url" placeholder="https://api.openai.com/v1" />
       </label>
       <label>模型名称
-        <input v-model="apiForm.model" type="text" placeholder="gpt-4o-mini" />
+        <input v-model="apiForm.model" type="text" placeholder="填写该服务控制台中的模型 ID" />
       </label>
       <label>API Key
         <input v-model="apiForm.api_key" type="password" placeholder="已保存可留空" autocomplete="off" />
@@ -553,7 +581,7 @@ async function toggle() {
         <button type="button" class="secondary-action" :disabled="apiSaving || !apiStatus.configured" @click="clearApi">清除 API</button>
       </div>
       <div v-if="apiError" class="bubble-error">⚠ {{ apiError }}</div>
-      <small>支持官方接口，也支持使用相同协议的中转地址。</small>
+      <small>内置常用国内外服务；“自定义接口”可填写其他官方或中转地址。模型 ID 始终可自行输入。</small>
     </div>
 
     <div

@@ -17,6 +17,13 @@ export interface ModelMeta {
   expressions: ModelExpression[];            // 表情（name 取自 .exp3.json 的 Name）
 }
 
+export type PetPose =
+  | 'idle' | 'walk' | 'lie' | 'kneel' | 'duck-sit'
+  | 'happy' | 'angry' | 'cute' | 'surprised' | 'sleepy';
+
+// 约束：walk/lie/kneel/duck-sit 是基于当前模型参数的参数化表现；只有资源实际声明的
+// .motion3.json 才可作为原生动作播放，不得伪造不存在的 Live2D 动作文件。
+
 export class Live2d {
   private app: Application | null = null;   // PIXI.Application
   private model: Live2DModel | null = null; // pixi-live2d-display 实例
@@ -39,6 +46,7 @@ export class Live2d {
   getMotionGroups(): string[];                             // 列出所有动作组名
   async playMotionRandom(group: string): Promise<void>;    // 随机播组内某动作
   async playExpressionRandom(): Promise<void>;             // 随机播表情
+  applyPose(pose: PetPose, durationMs?: number): void;     // 参数化姿态/情绪，平滑进入并自动回落
   get zoom(): number;                                      // 相对初始 contain 尺寸的缩放
   setZoom(z: number): void;                                // [0.35, 3]，浏览器预览使用；桌面端由窗口尺寸配合
 }

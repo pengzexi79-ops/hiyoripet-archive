@@ -3,7 +3,7 @@ import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
 import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi'
-import { Live2d, type ModelMeta } from './core/live2d'
+import { Live2d, type ModelMeta, type PetPose } from './core/live2d'
 import { PetSocket, type WsStatus } from './core/ws'
 import { Chat } from './core/chat'
 import { clearApiConfig, discoverApiModels, fetchApiStatus, fetchCollaboration, fetchModelCatalog, saveApiConfig, saveCollaboration, saveModelCatalog, testApiConnection, type ApiProtocol, type ApiStatus, type CollaborationSettings, type DiscoveredModel, type ModelProfile } from './core/api'
@@ -58,10 +58,13 @@ const guideVisible = ref(true)
 const reaction = ref<{ text: string; x: number; y: number } | null>(null)
 const chatBubbleVisible = ref(false)
 const bubble = ref<HTMLElement | null>(null)
-const bubblePos = ref({ x: 0, y: 0, side: 'right' as 'left' | 'right' | 'top', arrowY: 28 })
+const bubblePos = ref({ x: 0, y: 0, side: 'right' as 'left' | 'right' | 'top' | 'bottom', arrowY: 28 })
 const bubbleFading = ref(false)
 const zoomLevel = ref(1)
 const uiScale = computed(() => Math.max(0.85, Math.min(1.5, zoomLevel.value)))
+const FACES = ['smile', 'surprise', 'blush', 'wink'] as const
+type PetFace = typeof FACES[number]
+const AUTONOMOUS_POSES: PetPose[] = ['lie', 'kneel', 'duck-sit', 'happy', 'cute', 'sleepy']
 
 let pet: Live2d | null = null
 let socket: PetSocket | null = null
@@ -77,6 +80,8 @@ let wanderTarget: { x: number; y: number } | null = null
 let desktopWanderTarget: { x: number; y: number } | null = null
 let desktopPosition: { x: number; y: number } | null = null
 let desktopMoveBusy = false
+let desktopWalking = false
+let desktopStepAt = 0
 let nextWanderAt = 0
 let tapCount = 0
 let stopPetVisibilityListener: UnlistenFn | undefined
@@ -378,17 +383,25 @@ function positionApiPanel() {
 function openApiPanel() {
   apiError.value = ''
   chatBubbleVisible.value = false
+  stopIdle()
   stopBehavior()
+  stopAutonomy()
   apiPanelVisible.value = true
   lastUserInteraction.value = Date.now()
+  void loadApiPanelData()
   positionApiPanel()
   requestAnimationFrame(positionApiPanel)
 }
 
 function closeApiPanel() {
+  const wasVisible = apiPanelVisible.value
   apiPanelVisible.value = false
   apiError.value = ''
-  if (pet) startBehavior()
+  if (wasVisible && pet) {
+    startIdle()
+    startBehavior()
+    startAutonomy()
+  }
 }
 
 function selectApiPreset() {
@@ -444,11 +457,12 @@ function sendText() {
 function startIdle() {
   stopIdle()
   idleTimer = window.setInterval(() => {
-    if (!pet) return
+    if (!pet || apiPanelVisible.value || press) return
     const idle = Date.now() - lastUserInteraction.value > 8000
     if (idle) {
       pet.playMotionRandom('Idle').catch(() => {})
       if (Math.random() < 0.45) pet.applyFace(FACES[Math.floor(Math.random() * FACES.length)])
+      if (Math.random() < 0.32) pet.applyPose(AUTONOMOUS_POSES[Math.floor(Math.random() * AUTONOMOUS_POSES.length)], 5200)
       if (Math.random() < 0.3) {
         const b = pet.getBounds()
         showReaction(b.x + b.width / 2, b.y + b.height * 0.18)
@@ -488,6 +502,7 @@ async function stepDesktopWander() {
         x: Math.round(minX + Math.random() * Math.max(1, maxX - minX)),
         y: Math.round(minY + Math.random() * Math.max(1, maxY - minY)),
       }
+      pet.applyPose('walk', 2400)
       pet.playMotionRandom('Idle').catch(() => {})
       if (Math.random() < 0.65) pet.applyFace(FACES[Math.floor(Math.random() * FACES.length)])
     }
@@ -496,10 +511,20 @@ async function stepDesktopWander() {
     const distance = Math.hypot(dx, dy)
     if (distance < 5) {
       desktopWanderTarget = null
+      desktopWalking = false
+      desktopStepAt = 0
+      pet.applyPose('idle', 1200)
       nextWanderAt = Date.now() + 3000 + Math.random() * 6000
       return
     }
-    const step = Math.min(3, distance)
+    if (!desktopWalking) {
+      desktopWalking = true
+      pet.applyPose('walk', 2400)
+    }
+    const now = performance.now()
+    const elapsed = desktopStepAt > 0 ? Math.min(120, now - desktopStepAt) : 33
+    desktopStepAt = now
+    const step = Math.min(distance, Math.max(1, elapsed * 0.12))
     const monitor = await currentMonitor()
     const size = await appWindow.outerSize()
     if (!monitor) return
@@ -543,15 +568,25 @@ function startBehavior() {
     const distance = Math.hypot(dx, dy)
     if (distance < 8) {
       wanderTarget = null
+      desktopWalking = false
+      pet.applyPose('idle', 1200)
       nextWanderAt = Date.now() + 3000 + Math.random() * 6000
-    } else pet.setPosition(p.x + dx / distance * 3, p.y + dy / distance * 3)
-  }, 120)
+    } else {
+      const now = performance.now()
+      const elapsed = desktopStepAt > 0 ? Math.min(120, now - desktopStepAt) : 33
+      desktopStepAt = now
+      const step = Math.max(1, elapsed * 0.12)
+      pet.setPosition(p.x + dx / distance * step, p.y + dy / distance * step)
+    }
+  }, 33)
 }
 function stopBehavior() {
   if (behaviorTimer) clearInterval(behaviorTimer)
   behaviorTimer = undefined
   wanderTarget = null
   desktopWanderTarget = null
+  desktopWalking = false
+  desktopStepAt = 0
 }
 
 // ── M2：点击互动（数据流 A）──
@@ -571,7 +606,7 @@ function showReaction(x: number, y: number) {
 
 type PetApiAction =
   | { type: 'motion'; group: string }
-  | { type: 'face'; name: 'smile' | 'surprise' | 'blush' | 'wink' }
+  | { type: 'face'; name: PetFace }
   | { type: 'say'; text: string }
 
 function onApiAction(event: Event) {
@@ -595,22 +630,38 @@ function positionBubble() {
   const headY = b.y + b.height * 0.18
   const right = window.innerWidth - (b.x + b.width)
   const left = b.x
-  const side = right >= width + gap ? 'right' : left >= width + gap ? 'left' : 'top'
+  const top = b.y
+  const bottom = window.innerHeight - (b.y + b.height)
+  const side: 'left' | 'right' | 'top' | 'bottom' = right >= width + gap
+    ? 'right'
+    : left >= width + gap
+      ? 'left'
+      : top >= height + gap
+        ? 'top'
+        : bottom >= height + gap
+          ? 'bottom'
+          : 'top'
   const rawX = side === 'right'
     ? b.x + b.width + gap
     : side === 'left'
       ? b.x - width - gap
       : b.x + b.width / 2 - width / 2
-  const rawY = side === 'top' ? b.y - height - gap : headY - height * 0.42
+  const rawY = side === 'top'
+    ? b.y - height - gap
+    : side === 'bottom'
+      ? b.y + b.height + gap
+      : headY - height * 0.42
+  const x = Math.max(8, Math.min(rawX, window.innerWidth - width - 8))
+  const y = Math.max(8, Math.min(rawY, window.innerHeight - height - 8))
   bubblePos.value = {
-    x: Math.max(8, Math.min(rawX, window.innerWidth - width - 8)),
-    y: Math.max(8, Math.min(rawY, window.innerHeight - height - 8)),
+    x,
+    y,
     side,
-    arrowY: Math.max(18, Math.min(height - 18, headY - Math.max(8, Math.min(rawY, window.innerHeight - height - 8)))),
+    arrowY: Math.max(18, Math.min(height - 18, headY - y)),
   }
 }
 function openBubble() {
-  apiPanelVisible.value = false
+  if (apiPanelVisible.value) return
   cancelBubbleDismiss()
   bubbleFading.value = false
   chatBubbleVisible.value = true
@@ -643,6 +694,7 @@ async function closePet() {
   stopAutonomy()
   stopBehavior()
   desktopWanderTarget = null
+  stopIdle()
   await getCurrentWindow().hide().catch(() => {})
 }
 
@@ -658,7 +710,8 @@ async function applyZoom(nextZoom: number) {
       appWindow.outerSize().catch(() => null),
     ])
     await appWindow.setSize(new LogicalSize(targetWidth, targetHeight)).catch(() => {})
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    pet.syncRendererSize()
     pet.setZoom(zoomLevel.value)
     if (meta.value) pet.resizeModel(meta.value)
     if (beforePosition && beforeSize) {
@@ -667,6 +720,15 @@ async function applyZoom(nextZoom: number) {
         const nextPosition = {
           x: Math.round(beforePosition.x + (beforeSize.width - afterSize.width) / 2),
           y: Math.round(beforePosition.y + beforeSize.height - afterSize.height),
+        }
+        const monitor = await currentMonitor().catch(() => null)
+        if (monitor) {
+          const minX = monitor.workArea.position.x
+          const minY = monitor.workArea.position.y
+          const maxX = Math.max(minX, minX + monitor.workArea.size.width - afterSize.width)
+          const maxY = Math.max(minY, minY + monitor.workArea.size.height - afterSize.height)
+          nextPosition.x = Math.max(minX, Math.min(maxX, nextPosition.x))
+          nextPosition.y = Math.max(minY, Math.min(maxY, nextPosition.y))
         }
         await appWindow.setPosition(new PhysicalPosition(nextPosition.x, nextPosition.y)).catch(() => {})
         desktopPosition = nextPosition
@@ -709,8 +771,13 @@ function interactAt(x: number, y: number) {
   status.value = hits.includes('Head') ? '摸摸头～' : hits.includes('Body') ? '被摸到了～' : '戳到啦～'
   tapCount += 1
   pet.playMotionRandom(tapCount % 3 === 0 || Math.random() < 0.35 ? 'Idle' : 'TapBody').catch(() => {})
+  const poses: PetPose[] = hits.includes('Head')
+    ? ['cute', 'happy', 'surprised']
+    : ['happy', 'cute', 'angry', 'surprised']
+  pet.applyPose(poses[Math.floor(Math.random() * poses.length)], 2800)
   if (meta.value?.expressions.length && Math.random() < 0.35) pet.playExpressionRandom().catch(() => {})
   else randomFace()
+  maybeAutonomousTalk('你点击了我')
 }
 
 function onContextMenu(e: MouseEvent) {
@@ -760,8 +827,8 @@ function onPointerCancel(e: PointerEvent) {
 
 function onWheel(e: WheelEvent) {
   queueZoom(zoomLevel.value * (e.deltaY > 0 ? 0.9 : 1.1))
-  lastUserInteraction.value = Date.now()
   maybeAutonomousTalk('你调整了我的大小')
+  lastUserInteraction.value = Date.now()
 }
 
 </script>
@@ -819,8 +886,39 @@ function onWheel(e: WheelEvent) {
         <button type="button" class="primary-action" :disabled="apiSaving" @click="saveApi">保存连接</button>
         <button type="button" class="secondary-action" :disabled="apiSaving || !apiStatus.configured" @click="clearApi">清除 API</button>
       </div>
+      <div class="api-actions">
+        <button type="button" class="secondary-action" :disabled="apiDiscovering" @click="discoverModels">{{ apiDiscovering ? '识别中…' : '识别模型' }}</button>
+        <button type="button" class="secondary-action" :disabled="apiTesting || !apiForm.model" @click="testConnection">{{ apiTesting ? '测试中…' : '测试连接' }}</button>
+      </div>
+      <div v-if="providerMessage" class="provider-message">{{ providerMessage }}</div>
+      <div v-if="modelCatalog.length" class="model-catalog">
+        <div class="catalog-title">已识别模型 · 勾选后可加入协作</div>
+        <div v-for="model in modelCatalog" :key="model.protocol + model.base_url + model.id" class="model-row">
+          <input v-model="model.enabled" type="checkbox" :aria-label="`启用 ${model.name}`" />
+          <div class="model-info"><strong>{{ model.name || model.id }}</strong><small>{{ model.id }} · {{ model.protocol }}</small></div>
+          <select v-model="model.role" :aria-label="`${model.id} 协作角色`">
+            <option value="primary">主模型</option>
+            <option value="worker">协作</option>
+            <option value="judge">裁决</option>
+          </select>
+        </div>
+        <label class="collab-toggle"><input v-model="collaboration.enabled" type="checkbox" /> 启用多模型协作</label>
+        <label v-if="collaboration.enabled">协作策略
+          <select v-model="collaboration.strategy" class="strategy-select">
+            <option value="fallback">故障转移（更稳）</option>
+            <option value="parallel">并行汇总（更丰富）</option>
+          </select>
+        </label>
+        <label v-if="collaboration.enabled">裁决模型（可选）
+          <select v-model="collaboration.judge_model_id">
+            <option :value="undefined">不指定</option>
+            <option v-for="model in modelCatalog" :key="`judge-${model.id}`" :value="model.id">{{ model.name || model.id }}</option>
+          </select>
+        </label>
+        <button type="button" class="primary-action catalog-save" :disabled="catalogSaving" @click="saveModelSettings">{{ catalogSaving ? '保存中…' : '保存模型与协作' }}</button>
+      </div>
       <div v-if="apiError" class="bubble-error">⚠ {{ apiError }}</div>
-      <small>内置常用国内外服务；“自定义接口”可填写其他官方或中转地址。模型 ID 始终可自行输入。</small>
+      <small>内置常用国内外服务；“自定义接口”可填写其他官方或中转地址。识别不会发起生成请求，测试连接可能产生一次计费请求。</small>
     </div>
 
     <div
@@ -833,7 +931,7 @@ function onWheel(e: WheelEvent) {
       ref="bubble"
       class="chat-bubble"
       :class="[bubblePos.side, { fading: bubbleFading }]"
-      :style="{ left: bubblePos.x + 'px', top: bubblePos.y + 'px' }"
+      :style="{ left: bubblePos.x + 'px', top: bubblePos.y + 'px', '--bubble-arrow-y': bubblePos.arrowY + 'px' }"
       @pointerdown.stop
       @click.stop
     >
@@ -923,7 +1021,7 @@ body {
 .chat-bubble::after {
   content: '';
   position: absolute;
-  top: 28px;
+  top: var(--bubble-arrow-y, 28px);
   width: 12px;
   height: 12px;
   background: inherit;
@@ -934,6 +1032,7 @@ body {
 .chat-bubble.right::after { left: -7px; }
 .chat-bubble.left::after { right: -7px; transform: rotate(225deg); }
 .chat-bubble.top::after { left: calc(50% - 6px); top: auto; bottom: -7px; transform: rotate(315deg); }
+.chat-bubble.bottom::after { left: calc(50% - 6px); top: -7px; transform: rotate(135deg); }
 .bubble-head, .bubble-input-row {
   display: flex;
   align-items: center;

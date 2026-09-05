@@ -23,6 +23,10 @@ export interface ModelMeta {
   expressions: ModelExpression[]
 }
 
+export type PetPose =
+  | 'idle' | 'walk' | 'lie' | 'kneel' | 'duck-sit'
+  | 'happy' | 'angry' | 'cute' | 'surprised' | 'sleepy'
+
 export class Live2d {
   private app: PIXI.Application | null = null
   private view: HTMLCanvasElement | null = null
@@ -33,7 +37,13 @@ export class Live2d {
   private zoomLevel = 1
   // 伪表情在 Cubism 每帧提交前回写，避免动作/眨眼覆盖；销毁模型时必须解绑。
   private paramOverrides: Record<string, number> = {}
+  private poseTargets: Record<string, number> = {}
+  private poseCurrent: Record<string, number> = {}
+  private poseBase: Record<string, number> = {}
   private faceTimer: number | undefined
+  private poseTimer: number | undefined
+  private activePose: PetPose = 'idle'
+  private poseStartedAt = 0
   private paramHook: { off: (event: string, listener: () => void) => void } | null = null
   private paramListener: (() => void) | null = null
 
@@ -48,6 +58,8 @@ export class Live2d {
       autoStart: true,
     })
     this.view = canvas
+    this.app.ticker.maxFPS = 120
+    this.app.ticker.minFPS = 30
     this.syncRendererSize()
   }
 
@@ -65,7 +77,7 @@ export class Live2d {
     if (!this.app) throw new Error('Live2d.initApp() 必须先调用')
     // 先加载新模型，失败时保留当前模型，避免换装/换角色失败后出现空白窗口。
     const next = await Live2DModel.from(path)
-    if (this.model) this.destroy()
+    if (this.model) this.disposeModel()
     // path 为最终可访问 URL（Cubism 4 的 .model3.json）。
     // 本地模型需经 Tauri convertFileSrc 转 asset:// 后传入（在调用方处理，本方法只认 URL）。
     this.model = next
@@ -217,6 +229,57 @@ export class Live2d {
     }, durationMs)
   }
 
+  /** 参数化姿态：仅使用模型实际存在的参数，平滑进入并在时限后回到原始姿态。 */
+  applyPose(pose: PetPose, durationMs = 3600): void {
+    if (!this.model) return
+    this.ensureParamHook()
+    if (this.poseTimer) clearTimeout(this.poseTimer)
+    this.activePose = pose
+    this.poseStartedAt = performance.now()
+    this.poseTargets = {}
+    const core = (this.model.internalModel as unknown as { coreModel?: {
+      getParameterIndex: (id: string) => number
+      getParameterValueById?: (id: string) => number
+    } }).coreModel
+    const set = (id: string, ratio: number) => {
+      if (!core) return
+      try {
+        if (core.getParameterIndex(id) < 0) return
+        const { min, max } = this.getParameterRange(id)
+        const value = min + (max - min) * Math.max(0, Math.min(1, ratio))
+        if (!(id in this.poseBase)) {
+          const current = core.getParameterValueById?.(id)
+          this.poseBase[id] = Number.isFinite(current) ? current as number : value
+          this.poseCurrent[id] = this.poseBase[id]
+        }
+        this.poseTargets[id] = value
+      } catch { /* 模型不支持的参数静默跳过 */ }
+    }
+    const neutral = () => {
+      set('ParamBodyAngleX', 0.5); set('ParamBodyAngleY', 0.5); set('ParamBodyAngleZ', 0.5)
+      set('ParamLeg', 0.5); set('ParamArmLA', 0.5); set('ParamArmRA', 0.5)
+      set('ParamHandL', 0.5); set('ParamHandR', 0.5)
+    }
+    neutral()
+    switch (pose) {
+      case 'walk': set('ParamBodyAngleX', 0.58); set('ParamBodyAngleY', 0.54); set('ParamBodyAngleZ', 0.56); set('ParamLeg', 0.38); set('ParamArmLA', 0.68); set('ParamArmRA', 0.32); break
+      case 'lie': set('ParamBodyAngleY', 0.2); set('ParamBodyAngleZ', 0.42); set('ParamLeg', 0.2); set('ParamArmLA', 0.42); set('ParamArmRA', 0.58); break
+      case 'kneel': set('ParamBodyAngleY', 0.43); set('ParamBodyAngleZ', 0.52); set('ParamLeg', 0.28); set('ParamArmLA', 0.62); set('ParamArmRA', 0.38); break
+      case 'duck-sit': set('ParamBodyAngleY', 0.34); set('ParamBodyAngleZ', 0.5); set('ParamLeg', 0.14); set('ParamArmLA', 0.55); set('ParamArmRA', 0.45); break
+      case 'happy': set('ParamMouthForm', 0.92); set('ParamEyeLOpen', 0.86); set('ParamEyeROpen', 0.86); set('ParamEyeLSmile', 1); set('ParamEyeRSmile', 1); break
+      case 'angry': set('ParamMouthForm', 0.18); set('ParamBrowLY', 0.18); set('ParamBrowRY', 0.18); set('ParamBodyAngleZ', 0.54); break
+      case 'cute': set('ParamMouthForm', 0.78); set('ParamCheek', 0.8); set('ParamBodyAngleZ', 0.47); set('ParamEyeLSmile', 0.9); set('ParamEyeRSmile', 0.9); break
+      case 'surprised': set('ParamMouthOpenY', 0.78); set('ParamEyeLOpen', 1); set('ParamEyeROpen', 1); set('ParamBrowLY', 0.86); set('ParamBrowRY', 0.86); break
+      case 'sleepy': set('ParamEyeLOpen', 0.28); set('ParamEyeROpen', 0.28); set('ParamBodyAngleY', 0.46); break
+    }
+    this.poseTimer = window.setTimeout(() => {
+      this.poseTargets = {}
+      this.activePose = 'idle'
+      this.poseStartedAt = performance.now()
+      this.poseTimer = undefined
+    }, Math.max(800, durationMs))
+  }
+
   /** 在 beforeModelUpdate 回写，确保覆盖动作、原生表情、眨眼和注视的本帧结果。 */
   private ensureParamHook(): void {
     if (this.paramHook || !this.model) return
@@ -226,10 +289,33 @@ export class Live2d {
       coreModel: { setParameterValueById: (id: string, value: number) => void }
     }
     const listener = () => {
-      for (const values of [this.paramOverrides]) {
-        for (const [id, value] of Object.entries(values)) {
-          if (Number.isFinite(value)) internal.coreModel.setParameterValueById(id, value)
+      const elapsed = Math.max(0, (performance.now() - this.poseStartedAt) / 1000)
+      const wave = Math.sin(elapsed * 8)
+      const sway = Math.sin(elapsed * 4)
+      const ids = new Set([...Object.keys(this.poseBase), ...Object.keys(this.poseTargets)])
+      for (const id of ids) {
+        const target = this.poseTargets[id] ?? this.poseBase[id]
+        const current = this.poseCurrent[id] ?? target
+        const range = this.getParameterRange(id)
+        const span = range.max - range.min
+        let animatedTarget = target
+        if (this.activePose === 'walk') {
+          if (id === 'ParamLeg') animatedTarget += span * 0.12 * wave
+          if (id === 'ParamArmLA' || id === 'ParamArmRA') animatedTarget += span * 0.08 * (id === 'ParamArmLA' ? wave : -wave)
+          if (id === 'ParamBodyAngleZ') animatedTarget += span * 0.04 * sway
+        } else if (this.activePose === 'happy' || this.activePose === 'cute') {
+          if (id === 'ParamBodyAngleZ') animatedTarget += span * 0.025 * sway
+          if (id === 'ParamBustY' || id === 'ParamRibbon') animatedTarget += span * 0.06 * wave
+        } else if (this.activePose === 'sleepy') {
+          if (id === 'ParamBodyAngleY') animatedTarget += span * 0.025 * sway
         }
+        animatedTarget = Math.max(range.min, Math.min(range.max, animatedTarget))
+        const next = current + (animatedTarget - current) * 0.18
+        this.poseCurrent[id] = next
+        internal.coreModel.setParameterValueById(id, next)
+      }
+      for (const [id, value] of Object.entries(this.paramOverrides)) {
+        if (Number.isFinite(value)) internal.coreModel.setParameterValueById(id, value)
       }
     }
     internal.on('beforeModelUpdate', listener)
@@ -301,13 +387,20 @@ export class Live2d {
     coreModel.setParameterValueById(id, typeof value === 'boolean' ? Number(value) : value)
   }
 
-  destroy(): void {
+  private disposeModel(): void {
     if (this.faceTimer) clearTimeout(this.faceTimer)
+    if (this.poseTimer) clearTimeout(this.poseTimer)
     if (this.paramHook && this.paramListener) this.paramHook.off('beforeModelUpdate', this.paramListener)
     this.faceTimer = undefined
+    this.poseTimer = undefined
     this.paramHook = null
     this.paramListener = null
     this.paramOverrides = {}
+    this.poseTargets = {}
+    this.poseCurrent = {}
+    this.poseBase = {}
+    this.activePose = 'idle'
+    this.poseStartedAt = 0
     if (this.model) {
       this.app?.stage.removeChild(this.model)
       this.model.destroy()
@@ -315,5 +408,14 @@ export class Live2d {
     }
     this.baseScale = 0
     this.zoomLevel = 1
+  }
+
+  destroy(): void {
+    this.disposeModel()
+    if (this.app) {
+      this.app.destroy(true)
+      this.app = null
+    }
+    this.view = null
   }
 }
